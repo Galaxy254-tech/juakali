@@ -664,6 +664,30 @@ function RegisterPageContent() {
         </div>
       </div>
     </div>
+    </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-emerald-50 flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-2xl">
+          <div className="text-center mb-8">
+            <div className="flex items-center justify-center gap-2 mb-4">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600" />
+              <span className="font-bold text-2xl text-emerald-900">JuaKali Lend</span>
+            </div>
+            <h1 className="text-3xl font-bold text-emerald-900 mb-2">Create Your Account</h1>
+            <p className="text-emerald-700">Join thousands of businesses growing with JuaKali Lend</p>
+          </div>
+          <div className="flex items-center justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600"></div>
+          </div>
+        </div>
+      </div>
+    }>
+      <RegisterPageContent />
     </Suspense>
   );
 }

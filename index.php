@@ -1,8 +1,27 @@
 <?php
 session_start();
-require_once 'includes/config.php';
-require_once 'includes/database.php';
-require_once 'includes/functions.php';
+
+// Simple configuration
+define('APP_NAME', 'JuaKali Lend');
+define('APP_URL', 'http://localhost:8081');
+
+// Simple functions
+function sanitize($data) {
+    return htmlspecialchars(strip_tags(trim($data)));
+}
+
+function validateEmail($email) {
+    return filter_var($email, FILTER_VALIDATE_EMAIL);
+}
+
+function isLoggedIn() {
+    return isset($_SESSION['user_id']);
+}
+
+function redirect($url) {
+    header("Location: $url");
+    exit;
+}
 
 // Get statistics
 $db = new Database();

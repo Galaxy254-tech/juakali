@@ -75,7 +75,7 @@ const steps: StepConfig[] = [
   },
 ];
 
-export default function RegisterPage() {
+function RegisterPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { register: registerUser, isLoading, isAuthenticated } = useAuth();

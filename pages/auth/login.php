@@ -96,8 +96,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </form>
             </div>
             <div class="login-footer">
-                Don't have an account? <a href="register.php">Register here</a> | 
-                <a href="forgot-password.php">Forgot password?</a>
+                Don't have an account? <a href="register.php">Register here</a> |
+                <a href="forgot-password.php">Forgot password?</a><br>
+                <a href="../index.php">← Back to Home</a>
             </div>
         </div>
     </div>

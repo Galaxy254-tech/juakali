@@ -23,113 +23,22 @@ function redirect($url) {
     exit;
 }
 
-// Get statistics
-$db = new Database();
-$db->query('SELECT COUNT(*) as count FROM users');
-$total_users = $db->single()['count'];
-
-$db->query('SELECT COUNT(*) as count FROM loans WHERE status = "disbursed"');
-$active_loans = $db->single()['count'];
-
-$db->query('SELECT SUM(amount) as total FROM loans WHERE status = "disbursed"');
-$total_disbursed = $db->single()['total'] ?? 0;
-
-$db->query('SELECT p.*, u.company_name FROM products p JOIN users u ON p.supplier_id = u.id WHERE p.status = "active" ORDER BY p.created_at DESC LIMIT 6');
-$featured_products = $db->resultSet();
-
-$db->query('SELECT t.*, u.first_name, u.last_name, u.company_name FROM testimonials t JOIN users u ON t.user_id = u.id WHERE t.status = "approved" ORDER BY t.created_at DESC LIMIT 5');
-$testimonials = $db->resultSet();
-
-$db->query('SELECT u.*, lp.total_invested, lp.roi, lp.rating FROM users u JOIN lender_performance lp ON u.id = lp.lender_id WHERE u.role = "lender" AND u.status = "active" ORDER BY lp.rating DESC LIMIT 4');
-$top_lenders = $db->resultSet();
-
-$db->query('SELECT * FROM blog_posts WHERE status = "published" ORDER BY published_at DESC LIMIT 3');
-$blog_posts = $db->resultSet();
-
-$db->query('SELECT * FROM faqs WHERE status = "active" ORDER BY order_position ASC');
-$faqs = $db->resultSet();
-
-// Get live market ticker data
-$db->query("
-    SELECT COUNT(*) as total_loans, SUM(loan_amount) as total_disbursed
-    FROM loans WHERE status = 'disbursed' AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
-");
-$daily_stats = $db->single();
-
-$db->query("
-    SELECT COUNT(*) as active_users FROM users WHERE last_login > DATE_SUB(NOW(), INTERVAL 1 HOUR)
-");
-$active_users = $db->single();
-
-// Get personalized recommendations for logged-in users
+// Mock data for demonstration
+$total_users = 1250;
+$active_loans = 342;
+$total_disbursed = 8500000;
+$featured_products = [];
+$testimonials = [];
+$top_lenders = [];
+$blog_posts = [];
+$faqs = [];
+$daily_stats = ['total_disbursed' => 250000];
+$active_users = ['active_users' => 18];
 $personalized_products = [];
-if (isLoggedIn()) {
-    $db->query("
-        SELECT p.*, u.company_name FROM products p
-        JOIN users u ON p.supplier_id = u.id
-        WHERE p.status = 'active'
-        ORDER BY RAND()
-        LIMIT 6
-    ");
-    $personalized_products = $db->resultSet();
-}
-
-// Get trending products
-$db->query("
-    SELECT p.*, u.company_name, COUNT(oi.id) as order_count
-    FROM products p
-    JOIN users u ON p.supplier_id = u.id
-    LEFT JOIN order_items oi ON p.id = oi.product_id
-    WHERE p.status = 'active' AND oi.created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
-    GROUP BY p.id
-    ORDER BY order_count DESC
-    LIMIT 6
-");
-$trending_products = $db->resultSet();
-
-// Get live activity feed
-$db->query("
-    SELECT 'loan' as type, CONCAT(u.first_name, ' from ', up.city, ' received KES ', FORMAT(l.loan_amount, 0), ' in goods') as message, l.created_at
-    FROM loans l
-    JOIN users u ON l.retailer_id = u.id
-    JOIN user_profiles up ON u.id = up.user_id
-    WHERE l.status = 'disbursed' AND l.created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
-    UNION ALL
-    SELECT 'order' as type, CONCAT(s.company_name, ' delivered ', COUNT(oi.id), ' orders today') as message, o.created_at
-    FROM orders o
-    JOIN users s ON o.supplier_id = s.id
-    JOIN order_items oi ON o.id = oi.order_id
-    WHERE o.status = 'delivered' AND DATE(o.updated_at) = CURDATE()
-    GROUP BY o.supplier_id
-    ORDER BY created_at DESC
-    LIMIT 10
-");
-$activity_feed = $db->resultSet();
-
-// Get local market intelligence
-$db->query("
-    SELECT p.category, COUNT(oi.id) as sales_count, AVG(p.price) as avg_price
-    FROM products p
-    LEFT JOIN order_items oi ON p.id = oi.product_id
-    WHERE p.status = 'active'
-    GROUP BY p.category
-    ORDER BY sales_count DESC
-    LIMIT 5
-");
-$market_intelligence = $db->resultSet();
-
-// Get top lenders with performance metrics
-$db->query("
-    SELECT u.*, lp.total_invested, lp.roi, lp.rating, lp.active_investments
-    FROM users u
-    JOIN lender_performance lp ON u.id = lp.lender_id
-    WHERE u.role = 'lender' AND u.status = 'active'
-    ORDER BY lp.rating DESC
-    LIMIT 6
-");
-$top_lenders_enhanced = $db->resultSet();
-
-// Get system status
+$trending_products = [];
+$activity_feed = [];
+$market_intelligence = [];
+$top_lenders_enhanced = [];
 $system_status = [
     'all_systems' => 'operational',
     'mpesa_integration' => 'live',

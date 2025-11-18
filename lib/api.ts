@@ -475,6 +475,41 @@ export const analyticsApi = {
     const response = await api.get<ApiResponse>(`/analytics/financial-summary.php?period=${period}`);
     return response.data;
   },
+
+  getAdvancedAnalytics: async (type: string, period: string = 'month', startDate?: string, endDate?: string): Promise<ApiResponse> => {
+    const params = new URLSearchParams({
+      type,
+      period,
+    });
+
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+
+    const response = await api.get<ApiResponse>(`/analytics/advanced.php?${params}`);
+    return response.data;
+  },
+
+  getUserBehaviorAnalytics: async (userId?: string): Promise<ApiResponse> => {
+    const params = userId ? `?user_id=${userId}` : '';
+    const response = await api.get<ApiResponse>(`/analytics/user-behavior.php${params}`);
+    return response.data;
+  },
+
+  getRiskAssessment: async (userId?: string): Promise<ApiResponse> => {
+    const params = userId ? `?user_id=${userId}` : '';
+    const response = await api.get<ApiResponse>(`/analytics/risk-assessment.php${params}`);
+    return response.data;
+  },
+
+  getPerformanceMetrics: async (period: string = 'month'): Promise<ApiResponse> => {
+    const response = await api.get<ApiResponse>(`/analytics/performance-metrics.php?period=${period}`);
+    return response.data;
+  },
+
+  getPredictiveAnalytics: async (modelType: string): Promise<ApiResponse> => {
+    const response = await api.get<ApiResponse>(`/analytics/predictive.php?model=${modelType}`);
+    return response.data;
+  },
 };
 
 export default api;

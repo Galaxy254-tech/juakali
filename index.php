@@ -560,10 +560,10 @@ $system_status = [
             </div>
             
             <div class="hero-buttons">
-                <a href="auth/register.php" class="btn-hero btn-hero-primary">
+                <a href="pages/auth/register.php" class="btn-hero btn-hero-primary">
                     <i class="fas fa-user-plus"></i> Get Started
                 </a>
-                <a href="auth/login.php" class="btn-hero btn-hero-secondary">
+                <a href="pages/auth/login.php" class="btn-hero btn-hero-secondary">
                     <i class="fas fa-sign-in-alt"></i> Login
                 </a>
             </div>

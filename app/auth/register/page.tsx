@@ -647,7 +647,6 @@ function RegisterPageContent() {
         </div>
       </div>
     </div>
-    </div>
   );
 }
 

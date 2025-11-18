@@ -664,5 +664,6 @@ export default function RegisterPage() {
         </div>
       </div>
     </div>
+    </Suspense>
   );
 }

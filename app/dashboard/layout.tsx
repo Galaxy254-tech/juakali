@@ -242,23 +242,24 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Mobile Sidebar */}
-      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-80 p-0">
-          <Sidebar mobile />
-        </SheetContent>
-      </Sheet>
+    <NotificationsProvider>
+      <div className="min-h-screen bg-gray-50 flex">
+        {/* Mobile Sidebar */}
+        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+          <SheetContent side="left" className="w-80 p-0">
+            <Sidebar mobile />
+          </SheetContent>
+        </Sheet>
 
-      {/* Desktop Sidebar */}
-      <div className="hidden lg:flex lg:flex-shrink-0">
-        <div className="w-80 bg-white border-r border-emerald-200">
-          <Sidebar />
+        {/* Desktop Sidebar */}
+        <div className="hidden lg:flex lg:flex-shrink-0">
+          <div className="w-80 bg-white border-r border-emerald-200">
+            <Sidebar />
+          </div>
         </div>
-      </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0">
+        {/* Main Content */}
+        <div className="flex-1 flex flex-col min-w-0">
         {/* Top Navigation */}
         <header className="bg-white border-b border-emerald-200 px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">

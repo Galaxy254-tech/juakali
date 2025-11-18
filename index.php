@@ -529,11 +529,11 @@ $system_status = [
                     <li class="nav-item"><a class="nav-link" href="#testimonials">Testimonials</a></li>
                     <li class="nav-item"><a class="nav-link" href="#faq">FAQ</a></li>
                     <?php if (isLoggedIn()): ?>
-                        <li class="nav-item"><a class="nav-link" href="dashboard/<?php echo $_SESSION['role']; ?>/">Dashboard</a></li>
-                        <li class="nav-item"><a class="nav-link" href="auth/logout.php">Logout</a></li>
+                        <li class="nav-item"><a class="nav-link" href="pages/dashboard/<?php echo $_SESSION['role']; ?>/">Dashboard</a></li>
+                        <li class="nav-item"><a class="nav-link" href="pages/auth/logout.php">Logout</a></li>
                     <?php else: ?>
-                        <li class="nav-item"><a class="nav-link" href="auth/login.php">Login</a></li>
-                        <li class="nav-item"><a class="nav-link" href="auth/register.php">Register</a></li>
+                        <li class="nav-item"><a class="nav-link" href="pages/auth/login.php">Login</a></li>
+                        <li class="nav-item"><a class="nav-link" href="pages/auth/register.php">Register</a></li>
                     <?php endif; ?>
                 </ul>
             </div>

@@ -283,10 +283,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
             <div className="flex items-center gap-4">
               {/* Notifications */}
-              <Button variant="ghost" size="sm" className="relative">
-                <Bell className="w-5 h-5 text-emerald-700" />
-                <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-              </Button>
+              <NotificationButton />
 
               {/* User Menu */}
               <DropdownMenu>

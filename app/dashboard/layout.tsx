@@ -338,6 +338,5 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         </main>
       </div>
     </div>
-    </NotificationsProvider>
   );
 }

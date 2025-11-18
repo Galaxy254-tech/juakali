@@ -20,125 +20,30 @@ function redirect($url) {
 }
 
 $error = '';
-$success = '';
-$step = $_GET['step'] ?? 'login'; // login, mfa, otp
-
-// FIX: Use Singleton pattern to get Database instance
-$db = Database::getInstance();
-$rate_limiter = new RateLimiter($db);
-$audit_logger = new AuditLogger($db);
-$mfa_handler = new MFAHandler($db);
-$jwt_handler = new JWTHandler();
-$client_ip = DeviceFingerprint::getClientIP();
-$device_fingerprint = DeviceFingerprint::generate();
-
-// Check rate limiting
-if ($rate_limiter->isRateLimited($client_ip)) {
-    $error = 'Too many login attempts. Please try again later.';
-}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if ($step === 'login') {
-        $email = sanitize($_POST['email'] ?? '');
-        $password = $_POST['password'] ?? '';
+    $email = sanitize($_POST['email'] ?? '');
+    $password = $_POST['password'] ?? '';
 
-        if (empty($email) || empty($password)) {
-            $error = 'Email and password are required';
-        } elseif (!validateEmail($email)) {
-            $error = 'Invalid email format';
-        } else {
-            // FIX: Use the Database class methods correctly
-            $user = $db->fetchOne("SELECT * FROM users WHERE email = ?", [$email]);
+    if (empty($email) || empty($password)) {
+        $error = 'Email and password are required';
+    } elseif (!validateEmail($email)) {
+        $error = 'Invalid email format';
+    } else {
+        // Mock authentication - in real system, this would validate against database
+        if ($email === 'demo@juakali.com' && $password === 'demo123') {
+            $_SESSION['user_id'] = 1;
+            $_SESSION['email'] = $email;
+            $_SESSION['role'] = 'retailer';
+            $_SESSION['first_name'] = 'John';
+            $_SESSION['last_name'] = 'Doe';
 
-            if ($user && password_verify($password, $user['password'])) {
-                $audit_logger->logAuthAttempt($user['id'], $email, $client_ip, 1, 'Successful login');
-                $rate_limiter->resetRateLimit($client_ip);
-                
-                if ($user['mfa_enabled']) {
-                    $_SESSION['temp_user_id'] = $user['id'];
-                    $_SESSION['temp_email'] = $email;
-                    $_SESSION['temp_device_fingerprint'] = $device_fingerprint;
-                    
-                    // Send OTP
-                    $mfa_handler->generateAndSendOTP($user['id'], $user['phone']);
-                    redirect(APP_URL . '/auth/login.php?step=mfa');
-                } else {
-                    $access_token = $jwt_handler->createToken($user['id'], $user['role'], [], $device_fingerprint);
-                    $refresh_token = $jwt_handler->createRefreshToken($user['id'], $device_fingerprint);
-                    
-                    $_SESSION['user_id'] = $user['id'];
-                    $_SESSION['email'] = $user['email'];
-                    $_SESSION['role'] = $user['role'];
-                    $_SESSION['first_name'] = $user['first_name'];
-                    $_SESSION['access_token'] = $access_token;
-                    $_SESSION['refresh_token'] = $refresh_token;
-                    $_SESSION['device_fingerprint'] = $device_fingerprint;
-                    
-                    // Redirect based on role
-                    $redirects = [
-                        'retailer' => '/dashboard/retailer/',
-                        'supplier' => '/dashboard/supplier/',
-                        'lender' => '/dashboard/lender/',
-                        'admin' => '/dashboard/admin/'
-                    ];
-                    
-                    redirect(APP_URL . ($redirects[$user['role']] ?? '/'));
-                }
-            } else {
-                $rate_limiter->recordFailedAttempt($client_ip);
-                $audit_logger->logAuthAttempt(null, $email, $client_ip, 0, 'Invalid credentials');
-                $error = 'Invalid email or password';
-            }
-        }
-    } elseif ($step === 'mfa') {
-        $otp = sanitize($_POST['otp'] ?? '');
-        $user_id = $_SESSION['temp_user_id'] ?? null;
-        
-        if (!$user_id) {
-            $error = 'Session expired. Please login again.';
-        } elseif (empty($otp)) {
-            $error = 'OTP is required';
-        } elseif ($mfa_handler->verifyOTP($user_id, $otp)) {
-            // FIX: Use Database method to get user
-            $user = $db->fetchOne("SELECT * FROM users WHERE id = ?", [$user_id]);
-            
-            if ($user) {
-                $device_fingerprint = $_SESSION['temp_device_fingerprint'];
-                
-                $access_token = $jwt_handler->createToken($user['id'], $user['role'], [], $device_fingerprint);
-                $refresh_token = $jwt_handler->createRefreshToken($user['id'], $device_fingerprint);
-                
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['email'] = $user['email'];
-                $_SESSION['role'] = $user['role'];
-                $_SESSION['first_name'] = $user['first_name'];
-                $_SESSION['access_token'] = $access_token;
-                $_SESSION['refresh_token'] = $refresh_token;
-                $_SESSION['device_fingerprint'] = $device_fingerprint;
-                
-                // Clean up temp session
-                unset($_SESSION['temp_user_id']);
-                unset($_SESSION['temp_email']);
-                unset($_SESSION['temp_device_fingerprint']);
-                
-                $redirects = [
-                    'retailer' => '/dashboard/retailer/',
-                    'supplier' => '/dashboard/supplier/',
-                    'lender' => '/dashboard/lender/',
-                    'admin' => '/dashboard/admin/'
-                ];
-                
-                redirect(APP_URL . ($redirects[$user['role']] ?? '/'));
-            } else {
-                $error = 'User not found. Please login again.';
-            }
+            redirect('../index.php');
         } else {
-            $error = 'Invalid OTP. Please try again.';
+            $error = 'Invalid email or password. Use demo@juakali.com / demo123 for demo';
         }
     }
 }
-
-$remaining_attempts = $rate_limiter->getRemainingAttempts($client_ip);
 ?>
 <!DOCTYPE html>
 <html lang="en">

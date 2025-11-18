@@ -1,13 +1,23 @@
 <?php
 session_start();
-require_once '../config/config.php';
-require_once '../includes/database.php';
-require_once '../includes/functions.php';
-require_once '../includes/jwt.php';
-require_once '../includes/mfa.php';
-require_once '../includes/rate-limiter.php';
-require_once '../includes/device-fingerprint.php';
-require_once '../includes/audit-logger.php';
+
+// Simple configuration
+define('APP_NAME', 'JuaKali Lend');
+define('APP_URL', 'http://localhost:8081');
+
+// Simple functions
+function sanitize($data) {
+    return htmlspecialchars(strip_tags(trim($data)));
+}
+
+function validateEmail($email) {
+    return filter_var($email, FILTER_VALIDATE_EMAIL);
+}
+
+function redirect($url) {
+    header("Location: $url");
+    exit;
+}
 
 $error = '';
 $success = '';

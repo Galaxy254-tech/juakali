@@ -547,9 +547,9 @@ class GamificationSystem {
     }
 
     /**
-     * Get user statistics for badge checking
+     * Get user statistics for badge checking (public method for API)
      */
-    private function getUserStats($userId) {
+    public function getUserStats($userId) {
         $user = $this->db->fetchOne("SELECT role, created_at FROM users WHERE id = ?", [$userId]);
 
         $stats = [

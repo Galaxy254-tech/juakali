@@ -104,10 +104,21 @@ class GamificationSystem {
     public function __construct($userId = null) {
         $this->db = Database::getInstance();
         $this->userId = $userId;
+        $this->logger = new GamificationLogger(false);
 
-        if ($userId) {
-            $user = $this->db->fetchOne("SELECT role FROM users WHERE id = ?", [$userId]);
-            $this->userRole = $user['role'] ?? 'borrower';
+        try {
+            if ($userId) {
+                $user = $this->db->fetchOne("SELECT role FROM users WHERE id = ?", [$userId]);
+                $this->userRole = $user['role'] ?? 'borrower';
+
+                $this->logger->log('DEBUG', 'Gamification system initialized', [
+                    'user_id' => $userId,
+                    'user_role' => $this->userRole
+                ], $userId);
+            }
+        } catch (Exception $e) {
+            $this->logger->logError('Failed to initialize gamification system', $e, ['user_id' => $userId]);
+            throw $e;
         }
     }
 

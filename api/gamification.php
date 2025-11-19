@@ -83,33 +83,40 @@ function handleGetRequests($action) {
         case 'profile':
             $profile = $gamification->getUserGamificationProfile($userId);
             apiResponse(true, $profile);
+            break;
 
         case 'leaderboard':
             $period = $_GET['period'] ?? 'monthly';
             $limit = min(100, max(1, intval($_GET['limit'] ?? 50)));
             $leaderboard = $gamification->getLeaderboard('points', $period, $limit);
             apiResponse(true, $leaderboard);
+            break;
 
         case 'challenges':
             $challenges = $gamification->getUserChallenges($userId);
             apiResponse(true, $challenges);
+            break;
 
         case 'rewards_history':
             $limit = min(100, max(1, intval($_GET['limit'] ?? 50)));
             $history = $gamification->getUserRewardsHistory($userId, $limit);
             apiResponse(true, $history);
+            break;
 
         case 'stats':
             $stats = $gamification->getUserStats($userId);
             apiResponse(true, $stats);
+            break;
 
         case 'achievements':
             $achievements = $gamification->getUserAchievements($userId);
             apiResponse(true, $achievements);
+            break;
 
         case 'available_rewards':
             $rewards = $gamification->getAvailableRewards($userId);
             apiResponse(true, $rewards);
+            break;
 
         case 'challenge_details':
             $challengeId = intval($_GET['challenge_id'] ?? 0);
@@ -118,6 +125,7 @@ function handleGetRequests($action) {
             }
             $details = $gamification->getChallengeDetails($challengeId, $userId);
             apiResponse(true, $details);
+            break;
 
         default:
             apiResponse(false, null, 'Invalid action', 400);

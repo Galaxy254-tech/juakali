@@ -68,9 +68,20 @@ function getJSONInput() {
 }
 
 // Main API router
+$startTime = microtime(true);
+
 try {
     $method = $_SERVER['REQUEST_METHOD'];
     $action = $_GET['action'] ?? '';
+
+    // Log incoming request
+    $logger->log('INFO', 'API Request received', [
+        'method' => $method,
+        'action' => $action,
+        'endpoint' => $_SERVER['REQUEST_URI'] ?? 'unknown',
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'cli',
+        'ip' => $_SERVER['REMOTE_ADDR'] ?? 'cli'
+    ]);
 
     switch ($method) {
         case 'GET':
@@ -90,7 +101,16 @@ try {
     }
 
 } catch (Exception $e) {
-    error_log('Gamification API Error: ' . $e->getMessage());
+    $duration = microtime(true) - $startTime;
+
+    $logger->logError('Gamification API Error', $e, [
+        'method' => $_SERVER['REQUEST_METHOD'] ?? 'unknown',
+        'action' => $_GET['action'] ?? 'unknown',
+        'duration' => $duration,
+        'request_data' => $_REQUEST,
+        'user_id' => $_SESSION['user_id'] ?? null
+    ]);
+
     apiResponse(false, null, 'Internal server error', 500);
 }
 

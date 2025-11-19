@@ -626,17 +626,191 @@ try {
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Service Worker Registration
+        // Enhanced Service Worker Registration
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/mobile/service-worker.js')
+                navigator.serviceWorker.register('/mobile/service-worker-enhanced.js')
                     .then(registration => {
                         console.log('SW registered: ', registration);
+
+                        // Listen for service worker updates
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            if (newWorker) {
+                                newWorker.addEventListener('statechange', () => {
+                                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                        showUpdateAvailable();
+                                    }
+                                });
+                            }
+                        });
+
+                        // Handle service worker messages
+                        navigator.serviceWorker.addEventListener('message', event => {
+                            handleServiceWorkerMessage(event);
+                        });
+
+                        // Check network status
+                        checkNetworkStatus();
                     })
                     .catch(registration => {
                         console.log('SW registration failed: ', registration);
                     });
             });
+        }
+
+        // Handle service worker messages
+        function handleServiceWorkerMessage(event) {
+            const data = event.data;
+
+            switch (data.type) {
+                case 'SW_UPDATED':
+                    showUpdateAvailable();
+                    break;
+                case 'ONLINE':
+                    showOnlineStatus();
+                    break;
+                case 'OFFLINE':
+                    showOfflineStatus();
+                    break;
+                case 'NOTIFICATION_CLICKED':
+                    handleNotificationClick(data);
+                    break;
+                case 'CACHE_UPDATED':
+                    console.log('Cache updated successfully');
+                    break;
+            }
+        }
+
+        // Show update available notification
+        function showUpdateAvailable() {
+            const updateBar = document.createElement('div');
+            updateBar.className = 'update-notification';
+            updateBar.innerHTML = `
+                <div class="update-content">
+                    <i class="fas fa-download"></i>
+                    <span>New version available!</span>
+                    <button onclick="updateApp()" class="btn-update">Update</button>
+                    <button onclick="dismissUpdate()" class="btn-dismiss">&times;</button>
+                </div>
+            `;
+
+            document.body.appendChild(updateBar);
+
+            // Auto-hide after 10 seconds
+            setTimeout(() => {
+                if (updateBar.parentNode) {
+                    updateBar.remove();
+                }
+            }, 10000);
+        }
+
+        // Update the app
+        function updateApp() {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.controller.postMessage({ type: 'FORCE_REFRESH' });
+            }
+        }
+
+        // Dismiss update notification
+        function dismissUpdate() {
+            const updateBar = document.querySelector('.update-notification');
+            if (updateBar) {
+                updateBar.remove();
+            }
+        }
+
+        // Check network status
+        function checkNetworkStatus() {
+            if (!navigator.onLine) {
+                showOfflineStatus();
+            }
+        }
+
+        // Show offline status
+        function showOfflineStatus() {
+            const statusBar = document.createElement('div');
+            statusBar.className = 'offline-status';
+            statusBar.innerHTML = `
+                <div class="offline-content">
+                    <i class="fas fa-wifi-slash"></i>
+                    <span>You're offline</span>
+                    <small>Some features may not be available</small>
+                </div>
+            `;
+
+            document.body.appendChild(statusBar);
+        }
+
+        // Show online status
+        function showOnlineStatus() {
+            const statusBar = document.querySelector('.offline-status');
+            if (statusBar) {
+                statusBar.remove();
+            }
+        }
+
+        // Handle notification clicks
+        function handleNotificationClick(data) {
+            console.log('Notification clicked:', data);
+            // Handle notification actions
+        }
+
+        // Network status monitoring
+        window.addEventListener('online', () => {
+            showOnlineStatus();
+        });
+
+        window.addEventListener('offline', () => {
+            showOfflineStatus();
+        });
+
+        // Install PWA prompt with enhanced functionality
+        let deferredPrompt;
+        let installPromptShown = false;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e.prompt;
+
+            // Only show install prompt if not previously dismissed
+            if (!installPromptShown && localStorage.getItem('pwa-install-dismissed') !== 'true') {
+                showInstallPrompt();
+                installPromptShown = true;
+            }
+        });
+
+        function showInstallPrompt() {
+            const prompt = document.getElementById('installPrompt');
+            if (prompt) {
+                prompt.classList.remove('hidden');
+            }
+        }
+
+        function dismissInstallPrompt() {
+            const prompt = document.getElementById('installPrompt');
+            if (prompt) {
+                prompt.classList.add('hidden');
+            }
+            localStorage.setItem('pwa-install-dismissed', 'true');
+        }
+
+        function installPWA() {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('User accepted the install prompt');
+                        // Track installation analytics
+                        trackEvent('pwa_installed');
+                    } else {
+                        console.log('User dismissed the install prompt');
+                        trackEvent('pwa_dismissed');
+                    }
+                    deferredPrompt = null;
+                    dismissInstallPrompt();
+                });
+            }
         }
 
         // Install PWA prompt

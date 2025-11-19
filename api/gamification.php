@@ -229,6 +229,7 @@ function handlePostRequests($action) {
 
             $result = $gamification->triggerAchievement($userId, $achievementType, $data['metadata'] ?? []);
             apiResponse(true, $result, 'Achievement triggered');
+            break;
 
         default:
             apiResponse(false, null, 'Invalid action', 400);

@@ -6,11 +6,13 @@
  */
 
 require_once 'config/database.php';
+require_once 'gamification-logger.php';
 
 class GamificationSystem {
     private $db;
     private $userId;
     private $userRole;
+    private $logger;
 
     // Gamification configuration
     private $pointsConfig = [

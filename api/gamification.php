@@ -197,6 +197,7 @@ function handlePostRequests($action) {
             } else {
                 apiResponse(false, null, $result['message'] ?? 'Failed to redeem reward', 400);
             }
+            break;
 
         case 'create_challenge':
             // Admin only

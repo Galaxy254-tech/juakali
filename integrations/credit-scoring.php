@@ -303,72 +303,822 @@ class CreditScoringEngine {
 
         return max(300, min(850, $adjustedScore));
     }
-    
+    // ========== HELPER METHODS FOR ML SCORING ==========
+
     /**
-     * Detect fraudulent patterns
+     * Calculate payment consistency score
      */
-    public function detectFraud($retailer_id, $order_amount) {
-        $fraud_score = 0;
-        $indicators = [];
-        
-        // Check for unusual order patterns
+    private function calculatePaymentConsistency($retailer_id) {
         $this->db->query("
-            SELECT AVG(total_amount) as avg_order, 
-                   MAX(total_amount) as max_order,
-                   COUNT(*) as order_count
-            FROM orders WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+            SELECT DATEDIFF(actual_payment_date, due_date) as payment_delay
+            FROM repayment_schedule rs
+            JOIN payments p ON rs.id = p.repayment_id
+            WHERE rs.loan_id IN (SELECT id FROM loans WHERE retailer_id = ?)
+            AND rs.status = 'completed'
+            ORDER BY payment_delay
         ");
         $this->db->bind(':retailer_id', $retailer_id);
-        $pattern = $this->db->single();
-        
-        if ($pattern['order_count'] > 0) {
-            $deviation = abs($order_amount - $pattern['avg_order']) / $pattern['avg_order'];
-            if ($deviation > 2) {
-                $fraud_score += 30;
-                $indicators[] = 'unusual_order_amount';
+        $delays = $this->db->fetchAll();
+
+        if (count($delays) < 2) return 0.5;
+
+        $variance = $this->calculateVariance(array_column($delays, 'payment_delay'));
+        $max_variance = 144; // 12 days squared
+        return max(0, 1 - ($variance / $max_variance));
+    }
+
+    /**
+     * Calculate loan amount growth trend
+     */
+    private function calculateLoanAmountGrowth($retailer_id) {
+        $this->db->query("
+            SELECT loan_amount, created_at
+            FROM loans
+            WHERE retailer_id = ? AND status = 'repaid'
+            ORDER BY created_at DESC
+            LIMIT 6
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $loans = $this->db->fetchAll();
+
+        if (count($loans) < 2) return 0;
+
+        $first = end($loans);
+        $last = reset($loans);
+
+        $growth = ($last['loan_amount'] - $first['loan_amount']) / $first['loan_amount'];
+        return max(-1, min(1, $growth));
+    }
+
+    /**
+     * Check if KYC is verified
+     */
+    private function isKYCVerified($retailer_id) {
+        $this->db->query("SELECT kyc_verified FROM users WHERE id = ?");
+        $this->db->bind(':id', $retailer_id);
+        $result = $this->db->single();
+        return $result['kyc_verified'] ?? false;
+    }
+
+    /**
+     * Check for stable business patterns
+     */
+    private function hasStableBusinessPattern($retailer_id) {
+        $this->db->query("
+            SELECT DATE(created_at) as order_date, COUNT(*) as daily_orders
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 3 MONTH)
+            GROUP BY DATE(created_at)
+            HAVING daily_orders > 0
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $daily_activity = $this->db->fetchAll();
+
+        $active_days = count($daily_activity);
+        $total_days = 90; // 3 months
+
+        return ($active_days / $total_days) > 0.3; // Active at least 30% of days
+    }
+
+    /**
+     * Calculate order regularity
+     */
+    private function calculateOrderRegularity($patterns) {
+        if (empty($patterns)) return 0;
+
+        $entropy = 0;
+        $total_orders = array_sum(array_column($patterns, 'order_count'));
+
+        foreach ($patterns as $pattern) {
+            $probability = $pattern['order_count'] / $total_orders;
+            $entropy -= $probability * log($probability + 1e-10);
+        }
+
+        $max_entropy = log(168); // 24 hours * 7 days
+        return 1 - ($entropy / $max_entropy);
+    }
+
+    /**
+     * Get preferred order day
+     */
+    private function getPreferredOrderDay($patterns) {
+        if (empty($patterns)) return null;
+
+        $day_counts = array_fill(1, 7, 0);
+        foreach ($patterns as $pattern) {
+            $day_counts[$pattern['day_of_week']] += $pattern['order_count'];
+        }
+
+        return array_keys($day_counts, max($day_counts))[0];
+    }
+
+    /**
+     * Get peak ordering hour
+     */
+    private function getPeakOrderingHour($patterns) {
+        if (empty($patterns)) return null;
+
+        $hour_counts = array_fill(0, 23, 0);
+        foreach ($patterns as $pattern) {
+            $hour_counts[$pattern['hour']] += $pattern['order_count'];
+        }
+
+        return array_keys($hour_counts, max($hour_counts))[0];
+    }
+
+    /**
+     * Calculate weekend vs weekday ratio
+     */
+    private function calculateWeekdayWeekendRatio($patterns) {
+        if (empty($patterns)) return 1;
+
+        $weekend_orders = 0;
+        $weekday_orders = 0;
+
+        foreach ($patterns as $pattern) {
+            if ($pattern['day_of_week'] == 1 || $pattern['day_of_week'] == 7) {
+                $weekend_orders += $pattern['order_count'];
+            } else {
+                $weekday_orders += $pattern['order_count'];
             }
         }
-        
-        // Check for rapid successive orders
+
+        return $weekday_orders > 0 ? $weekend_orders / $weekday_orders : 1;
+    }
+
+    /**
+     * Calculate order size evolution
+     */
+    private function calculateOrderSizeEvolution($retailer_id) {
         $this->db->query("
-            SELECT COUNT(*) as recent_orders 
-            FROM orders 
-            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            SELECT AVG(total_amount) as avg_size, created_at
+            FROM orders
+            WHERE retailer_id = ? AND status != 'cancelled'
+            GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+            ORDER BY created_at DESC
+            LIMIT 6
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $monthly = $this->db->fetchAll();
+
+        if (count($monthly) < 2) return 0;
+
+        $first = end($monthly);
+        $last = reset($monthly);
+
+        return $first['avg_size'] > 0 ? ($last['avg_size'] - $first['avg_size']) / $first['avg_size'] : 0;
+    }
+
+    /**
+     * Calculate variance for consistency measurements
+     */
+    private function calculateVariance($values) {
+        if (empty($values)) return 0;
+
+        $mean = array_sum($values) / count($values);
+        $squared_diffs = array_map(function($x) use ($mean) {
+            return pow($x - $mean, 2);
+        }, $values);
+
+        return array_sum($squared_diffs) / count($values);
+    }
+
+    /**
+     * Individual scoring methods for each feature category
+     */
+    private function calculateRepaymentScore($repayment) {
+        $score = 500;
+
+        // Perfect repayment rate gives +100 points
+        $score += $repayment['repayment_rate'] * 100;
+
+        // Default penalty
+        $score -= $repayment['default_rate'] * 200;
+
+        // Consistency bonus
+        $score += $repayment['payment_consistency'] * 50;
+
+        // Growth bonus
+        $score += $repayment['loan_amount_growth'] * 30;
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculateUtilizationScore($utilization) {
+        $score = 500;
+
+        // Low utilization is good (< 30%)
+        if ($utilization['credit_utilization_rate'] < 0.3) {
+            $score += 50;
+        } elseif ($utilization['credit_utilization_rate'] > 0.8) {
+            $score -= 100;
+        }
+
+        // Good repayment history bonus
+        if ($utilization['total_repaid'] > 0) {
+            $repayment_rate = $utilization['total_repaid'] / $utilization['total_borrowed'];
+            $score += $repayment_rate * 50;
+        }
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculateStabilityScore($stability) {
+        $score = 500;
+
+        // Business age bonus
+        if ($stability['business_age_days'] > 365) {
+            $score += 50;
+        } elseif ($stability['business_age_days'] > 90) {
+            $score += 25;
+        }
+
+        // Order frequency bonus
+        if ($stability['order_frequency'] > 10) {
+            $score += 30;
+        }
+
+        // KYC verification bonus
+        if ($stability['kyc_verified']) {
+            $score += 40;
+        }
+
+        // Stable business pattern bonus
+        if ($stability['has_stable_business']) {
+            $score += 30;
+        }
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculateBehaviorScore($behavior) {
+        $score = 500;
+
+        // Regular ordering bonus
+        $score += $behavior['order_regularity'] * 50;
+
+        // Consistent timing bonus
+        if ($behavior['order_regularity'] > 0.7) {
+            $score += 30;
+        }
+
+        // Growth bonus
+        $score += $behavior['order_size_evolution'] * 20;
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculateEconomicScore($economic) {
+        $score = 500;
+
+        // Industry risk adjustment
+        $industry_penalty = $economic['industry_risk_factor'] * 100;
+        $score -= $industry_penalty;
+
+        // Seasonal adjustment
+        $score += $economic['seasonal_adjustment'] * 100;
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculateMacroScore($economic) {
+        $score = 500;
+
+        // Inflation impact adjustment
+        $score -= $economic['inflation_impact'] * 30;
+
+        // Competitor pressure adjustment
+        $score -= $economic['competitor_pressure'] * 20;
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculatePatternScore($behavior) {
+        $score = 500;
+
+        // Weekend vs weekday pattern normalcy
+        if ($behavior['weekend_vs_weekday_ratio'] > 0.2 && $behavior['weekend_vs_weekday_ratio'] < 3) {
+            $score += 25;
+        }
+
+        // Peak hour normalcy (9-17 is business hours)
+        if ($behavior['peak_ordering_hour'] >= 9 && $behavior['peak_ordering_hour'] <= 17) {
+            $score += 25;
+        }
+
+        return max(300, min(700, $score));
+    }
+
+    private function calculateInflationImpact($retailer_id) {
+        // Simplified inflation impact calculation
+        $this->db->query("
+            SELECT AVG(total_amount) as avg_order
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 6 MONTH)
         ");
         $this->db->bind(':retailer_id', $retailer_id);
         $recent = $this->db->single();
-        
-        if ($recent['recent_orders'] > 5) {
-            $fraud_score += 25;
-            $indicators[] = 'rapid_orders';
-        }
-        
-        // Check for location anomalies
+
         $this->db->query("
-            SELECT last_login_ip FROM users WHERE id = ?
+            SELECT AVG(total_amount) as avg_order
+            FROM orders
+            WHERE retailer_id = ?
+            AND created_at BETWEEN DATE_SUB(NOW(), INTERVAL 12 MONTH) AND DATE_SUB(NOW(), INTERVAL 6 MONTH)
         ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $historical = $this->db->single();
+
+        if ($historical['avg_order'] > 0) {
+            return ($recent['avg_order'] - $historical['avg_order']) / $historical['avg_order'];
+        }
+
+        return 0;
+    }
+
+    private function assessCompetitorPressure($retailer_id) {
+        // Simplified competitor pressure based on order frequency changes
+        $this->db->query("
+            SELECT COUNT(*) as order_count
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 3 MONTH)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $recent = $this->db->single();
+
+        $this->db->query("
+            SELECT COUNT(*) as order_count
+            FROM orders
+            WHERE retailer_id = ?
+            AND created_at BETWEEN DATE_SUB(NOW(), INTERVAL 6 MONTH) AND DATE_SUB(NOW(), INTERVAL 3 MONTH)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $previous = $this->db->single();
+
+        if ($previous['order_count'] > 0) {
+            $decline_rate = ($previous['order_count'] - $recent['order_count']) / $previous['order_count'];
+            return max(0, $decline_rate);
+        }
+
+        return 0;
+    }
+
+    private function getRecentActivityScore($retailer_id) {
+        $this->db->query("
+            SELECT COUNT(*) as recent_actions
+            FROM analytics_events
+            WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
+        ");
+        $this->db->bind(':user_id', $retailer_id);
+        $activity = $this->db->single();
+
+        return min(1, $activity['recent_actions'] / 20); // Normalize to 0-1
+    }
+
+    private function calculateRelationshipBonus($retailer_id) {
+        $this->db->query("SELECT DATEDIFF(NOW(), created_at) as days_active FROM users WHERE id = ?");
         $this->db->bind(':id', $retailer_id);
         $user = $this->db->single();
-        
-        // Log fraud detection event
+
+        $years = $user['days_active'] / 365;
+        return min(50, $years * 10); // Max 50 points bonus
+    }
+
+    private function calculatePredictionConfidence($features) {
+        $confidence = 0.5; // Base confidence
+
+        // More data = higher confidence
+        if ($features['repayment']['total_loans'] > 5) $confidence += 0.2;
+        if ($features['stability']['business_age_days'] > 180) $confidence += 0.15;
+        if ($features['stability']['total_orders'] > 10) $confidence += 0.1;
+        if ($features['behavior']['order_regularity'] > 0.5) $confidence += 0.05;
+
+        return min(1.0, $confidence);
+    }
+
+    private function determineRiskLevel($score) {
+        if ($score >= 750) return 'very_low';
+        if ($score >= 700) return 'low';
+        if ($score >= 650) return 'medium_low';
+        if ($score >= 600) return 'medium';
+        if ($score >= 550) return 'medium_high';
+        if ($score >= 500) return 'high';
+        return 'very_high';
+    }
+
+    private function updateCreditScore($retailer_id, $score, $confidence, $features) {
+        // Update main credit score
+        $this->db->query("
+            INSERT INTO credit_scores (retailer_id, score, updated_at)
+            VALUES (?, ?, NOW())
+            ON DUPLICATE KEY UPDATE score = ?, updated_at = NOW()
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $this->db->bind(':score', $score);
+        $this->db->bind(':score', $score);
+        $this->db->execute();
+
+        // Update risk assessment
+        $this->db->query("
+            INSERT INTO risk_assessments (retailer_id, risk_score, risk_level, fraud_indicators, assessment_date, updated_at)
+            VALUES (?, ?, ?, ?, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                risk_score = ?,
+                risk_level = ?,
+                fraud_indicators = ?,
+                assessment_date = NOW(),
+                updated_at = NOW()
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $this->db->bind(':risk_score', 850 - $score); // Inverse risk score
+        $this->db->bind(':risk_level', $this->determineRiskLevel($score));
+        $this->db->bind(':fraud_indicators', json_encode($features));
+        $this->db->bind(':risk_score', 850 - $score);
+        $this->db->bind(':risk_level', $this->determineRiskLevel($score));
+        $this->db->bind(':fraud_indicators', json_encode($features));
+        $this->db->execute();
+    }
+
+    // ========== ENHANCED FRAUD DETECTION SYSTEM ==========
+
+    /**
+     * Advanced fraud detection with ML capabilities
+     */
+    public function detectFraud($retailer_id, $order_amount = null, $context = []) {
+        $fraud_score = 0;
+        $indicators = [];
+        $risk_factors = [];
+
+        // 1. Transaction Pattern Analysis
+        $transaction_analysis = $this->analyzeTransactionPatterns($retailer_id, $order_amount);
+        $fraud_score += $transaction_analysis['score'];
+        $indicators = array_merge($indicators, $transaction_analysis['indicators']);
+
+        // 2. Behavioral Analysis
+        $behavioral_analysis = $this->analyzeBehavioralPatterns($retailer_id);
+        $fraud_score += $behavioral_analysis['score'];
+        $indicators = array_merge($indicators, $behavioral_analysis['indicators']);
+
+        // 3. Device and Location Analysis
+        $device_analysis = $this->analyzeDevicePatterns($retailer_id, $context);
+        $fraud_score += $device_analysis['score'];
+        $indicators = array_merge($indicators, $device_analysis['indicators']);
+
+        // 4. Velocity Checks
+        $velocity_analysis = $this->analyzeVelocityPatterns($retailer_id);
+        $fraud_score += $velocity_analysis['score'];
+        $indicators = array_merge($indicators, $velocity_analysis['indicators']);
+
+        // 5. Network Analysis
+        $network_analysis = $this->analyzeNetworkPatterns($retailer_id);
+        $fraud_score += $network_analysis['score'];
+        $indicators = array_merge($indicators, $network_analysis['indicators']);
+
+        // Determine overall risk level
+        $risk_level = $this->calculateFraudRiskLevel($fraud_score);
+
+        // Log high-risk events
         if ($fraud_score > 50) {
+            $this->logFraudEvent($retailer_id, $fraud_score, $indicators, $risk_level, $context);
+        }
+
+        // Trigger automated responses for critical cases
+        if ($fraud_score > 80) {
+            $this->triggerFraudResponse($retailer_id, $fraud_score, $indicators);
+        }
+
+        return [
+            'fraud_score' => min(100, $fraud_score),
+            'risk_level' => $risk_level,
+            'indicators' => $indicators,
+            'is_suspicious' => $fraud_score > 50,
+            'requires_review' => $fraud_score > 70,
+            'auto_reject' => $fraud_score > 85,
+            'analysis' => [
+                'transaction' => $transaction_analysis,
+                'behavioral' => $behavioral_analysis,
+                'device' => $device_analysis,
+                'velocity' => $velocity_analysis,
+                'network' => $network_analysis
+            ]
+        ];
+    }
+
+    /**
+     * Analyze transaction patterns for fraud indicators
+     */
+    private function analyzeTransactionPatterns($retailer_id, $order_amount) {
+        $score = 0;
+        $indicators = [];
+
+        // Get recent transaction history
+        $this->db->query("
+            SELECT
+                total_amount,
+                created_at,
+                COUNT(*) as order_count,
+                AVG(total_amount) as avg_amount,
+                STDDEV(total_amount) as amount_stddev
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $recent = $this->db->single();
+
+        if ($recent['order_count'] > 0) {
+            // Unusually large order amount
+            if ($order_amount && $recent['avg_amount'] > 0) {
+                $deviation = abs($order_amount - $recent['avg_amount']) / $recent['avg_amount'];
+                if ($deviation > 3) {
+                    $score += 35;
+                    $indicators[] = 'unusual_large_order';
+                } elseif ($deviation > 2) {
+                    $score += 20;
+                    $indicators[] = 'suspicious_order_size';
+                }
+            }
+
+            // Round number orders (potential structuring)
+            if ($order_amount && $order_amount % 1000 == 0) {
+                $score += 15;
+                $indicators[] = 'round_number_order';
+            }
+
+            // High transaction frequency
+            if ($recent['order_count'] > 50) {
+                $score += 25;
+                $indicators[] = 'high_frequency_transactions';
+            }
+
+            // Consistent transaction amounts (potential automation)
+            if ($recent['amount_stddev'] < 100 && $recent['order_count'] > 10) {
+                $score += 20;
+                $indicators[] = 'consistent_transaction_amounts';
+            }
+        }
+
+        return ['score' => $score, 'indicators' => $indicators];
+    }
+
+    /**
+     * Analyze behavioral patterns
+     */
+    private function analyzeBehavioralPatterns($retailer_id) {
+        $score = 0;
+        $indicators = [];
+
+        // Unusual timing patterns
+        $this->db->query("
+            SELECT
+                HOUR(created_at) as hour,
+                DAYOFWEEK(created_at) as day_of_week,
+                COUNT(*) as order_count
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
+            GROUP BY HOUR(created_at), DAYOFWEEK(created_at)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $timing = $this->db->fetchAll();
+
+        $late_night_orders = 0;
+        $early_morning_orders = 0;
+
+        foreach ($timing as $time) {
+            if ($time['hour'] < 6 || $time['hour'] > 23) {
+                $late_night_orders += $time['order_count'];
+            }
+        }
+
+        if ($late_night_orders > 5) {
+            $score += 20;
+            $indicators[] = 'unusual_timing_patterns';
+        }
+
+        // Sudden change in order behavior
+        $this->db->query("
+            SELECT
+                COUNT(*) as current_week_orders,
+                AVG(total_amount) as current_week_avg
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 WEEK)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $current = $this->db->single();
+
+        $this->db->query("
+            SELECT
+                COUNT(*) as previous_week_orders,
+                AVG(total_amount) as previous_week_avg
+            FROM orders
+            WHERE retailer_id = ?
+            AND created_at BETWEEN DATE_SUB(NOW(), INTERVAL 2 WEEK) AND DATE_SUB(NOW(), INTERVAL 1 WEEK)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $previous = $this->db->single();
+
+        if ($previous['previous_week_orders'] > 0) {
+            $order_change = ($current['current_week_orders'] - $previous['previous_week_orders']) / $previous['previous_week_orders'];
+            if ($order_change > 5) { // 500% increase
+                $score += 30;
+                $indicators[] = 'sudden_behavior_change';
+            }
+        }
+
+        return ['score' => $score, 'indicators' => $indicators];
+    }
+
+    /**
+     * Analyze device and location patterns
+     */
+    private function analyzeDevicePatterns($retailer_id, $context) {
+        $score = 0;
+        $indicators = [];
+
+        // Multiple devices in short time
+        $this->db->query("
+            SELECT COUNT(DISTINCT device_fingerprint) as device_count
+            FROM sessions
+            WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        ");
+        $this->db->bind(':user_id', $retailer_id);
+        $devices = $this->db->single();
+
+        if ($devices['device_count'] > 3) {
+            $score += 25;
+            $indicators[] = 'multiple_devices';
+        }
+
+        // IP address changes
+        $this->db->query("
+            SELECT COUNT(DISTINCT ip_address) as ip_count
+            FROM sessions
+            WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        ");
+        $this->db->bind(':user_id', $retailer_id);
+        $ips = $this->db->single();
+
+        if ($ips['ip_count'] > 2) {
+            $score += 20;
+            $indicators[] = 'multiple_ip_addresses';
+        }
+
+        // Geographic anomalies (simplified)
+        if (isset($context['ip_address'])) {
+            $this->db->query("SELECT last_login_ip FROM users WHERE id = ?");
+            $this->db->bind(':id', $retailer_id);
+            $user = $this->db->single();
+
+            if ($user['last_login_ip'] && $user['last_login_ip'] !== $context['ip_address']) {
+                $score += 15;
+                $indicators[] = 'ip_address_change';
+            }
+        }
+
+        return ['score' => $score, 'indicators' => $indicators];
+    }
+
+    /**
+     * Analyze velocity patterns
+     */
+    private function analyzeVelocityPatterns($retailer_id) {
+        $score = 0;
+        $indicators = [];
+
+        // Rapid successive orders
+        $this->db->query("
+            SELECT COUNT(*) as rapid_orders
+            FROM orders
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $rapid = $this->db->single();
+
+        if ($rapid['rapid_orders'] > 10) {
+            $score += 40;
+            $indicators[] = 'rapid_order_velocity';
+        } elseif ($rapid['rapid_orders'] > 5) {
+            $score += 25;
+            $indicators[] = 'high_order_velocity';
+        }
+
+        // Multiple loan applications
+        $this->db->query("
+            SELECT COUNT(*) as loan_applications
+            FROM loans
+            WHERE retailer_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $loans = $this->db->single();
+
+        if ($loans['loan_applications'] > 3) {
+            $score += 35;
+            $indicators[] = 'multiple_loan_applications';
+        }
+
+        return ['score' => $score, 'indicators' => $indicators];
+    }
+
+    /**
+     * Analyze network patterns
+     */
+    private function analyzeNetworkPatterns($retailer_id) {
+        $score = 0;
+        $indicators = [];
+
+        // Check for shared devices/IPs with known fraudulent accounts
+        $this->db->query("
+            SELECT DISTINCT s.device_fingerprint, s.ip_address
+            FROM sessions s
+            JOIN fraud_detection f ON s.user_id = f.user_id
+            WHERE f.severity IN ('high', 'critical')
+            AND s.created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+        ");
+        $fraud_devices = $this->db->fetchAll();
+
+        foreach ($fraud_devices as $fraud_device) {
             $this->db->query("
-                INSERT INTO fraud_detection (user_id, event_type, description, severity)
-                VALUES (?, ?, ?, ?)
+                SELECT COUNT(*) as matches
+                FROM sessions
+                WHERE user_id = ?
+                AND device_fingerprint = ?
+                AND created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
             ");
             $this->db->bind(':user_id', $retailer_id);
-            $this->db->bind(':event_type', 'suspicious_activity');
-            $this->db->bind(':description', json_encode($indicators));
-            $severity = $fraud_score > 75 ? 'high' : 'medium';
-            $this->db->bind(':severity', $severity);
-            $this->db->execute();
+            $this->db->bind(':device_fingerprint', $fraud_device['device_fingerprint']);
+            $matches = $this->db->single();
+
+            if ($matches['matches'] > 0) {
+                $score += 50;
+                $indicators[] = 'device_linked_to_fraud';
+                break;
+            }
         }
-        
-        return [
-            'fraud_score' => $fraud_score,
+
+        return ['score' => $score, 'indicators' => $indicators];
+    }
+
+    /**
+     * Calculate overall fraud risk level
+     */
+    private function calculateFraudRiskLevel($score) {
+        if ($score >= 85) return 'critical';
+        if ($score >= 70) return 'high';
+        if ($score >= 50) return 'medium';
+        if ($score >= 30) return 'low';
+        return 'minimal';
+    }
+
+    /**
+     * Log fraud detection events
+     */
+    private function logFraudEvent($retailer_id, $score, $indicators, $risk_level, $context) {
+        $this->db->query("
+            INSERT INTO fraud_detection (
+                user_id, event_type, description, severity, status, created_at
+            ) VALUES (?, ?, ?, ?, 'pending', NOW())
+        ");
+        $this->db->bind(':user_id', $retailer_id);
+        $this->db->bind(':event_type', 'ml_fraud_detection');
+        $this->db->bind(':description', json_encode([
+            'fraud_score' => $score,
             'indicators' => $indicators,
-            'is_suspicious' => $fraud_score > 50
-        ];
+            'context' => $context,
+            'timestamp' => date('Y-m-d H:i:s')
+        ]));
+        $this->db->bind(':severity', $risk_level);
+        $this->db->execute();
+    }
+
+    /**
+     * Trigger automated fraud response
+     */
+    private function triggerFraudResponse($retailer_id, $score, $indicators) {
+        // Temporary account hold
+        $this->db->query("
+            UPDATE users
+            SET status = 'suspended', updated_at = NOW()
+            WHERE id = ?
+        ");
+        $this->db->bind(':id', $retailer_id);
+        $this->db->execute();
+
+        // Log the action
+        $this->db->query("
+            INSERT INTO audit_logs (
+                user_id, action, entity_type, entity_id,
+                old_values, new_values, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+        ");
+        $this->db->bind(':user_id', $retailer_id);
+        $this->db->bind(':action', 'auto_suspension_fraud_risk');
+        $this->db->bind(':entity_type', 'user');
+        $this->db->bind(':entity_id', $retailer_id);
+        $this->db->bind(':old_values', json_encode(['status' => 'active']));
+        $this->db->bind(':new_values', json_encode([
+            'status' => 'suspended',
+            'fraud_score' => $score,
+            'indicators' => $indicators
+        ]));
+        $this->db->execute();
     }
     
     /**

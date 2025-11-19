@@ -1208,6 +1208,3 @@ function runDailyGamificationCron() {
 }
 
 ?>
-</html>
-</body>
-</html>

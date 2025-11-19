@@ -183,6 +183,7 @@ function handlePostRequests($action) {
             } else {
                 apiResponse(false, null, 'Failed to join challenge', 500);
             }
+            break;
 
         case 'redeem_reward':
             $rewardId = intval($data['reward_id'] ?? 0);

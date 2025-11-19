@@ -218,6 +218,7 @@ function handlePostRequests($action) {
             } else {
                 apiResponse(false, null, 'Failed to create challenge', 500);
             }
+            break;
 
         case 'trigger_achievement':
             // For testing and manual triggers

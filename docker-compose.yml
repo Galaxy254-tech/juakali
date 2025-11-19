@@ -1,0 +1,403 @@
+version: '3.8'
+
+services:
+  # Database Service
+  database:
+    image: mariadb:11.8
+    container_name: juakali_database
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-juakali_secure_password_2024}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-juakali_lend}
+      MYSQL_USER: ${MYSQL_USER:-juakali_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-juakali_password_2024}
+    ports:
+      - "3306:3306"
+    volumes:
+      - database_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./database/migrations:/docker-entrypoint-initdb.d/02-migrations.sql
+    networks:
+      - juakali_network
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Redis Cache Service
+  redis:
+    image: redis:7-alpine
+    container_name: juakali_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - juakali_network
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PHP-FPM Service (API)
+  api:
+    build:
+      context: ./docker/api
+      dockerfile: Dockerfile
+    container_name: juakali_api
+    restart: unless-stopped
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - DB_HOST=database
+      - DB_PORT=3306
+      - DB_DATABASE=${MYSQL_DATABASE:-juakali_lend}
+      - DB_USERNAME=${MYSQL_USER:-juakali_user}
+      - DB_PASSWORD=${MYSQL_PASSWORD:-juakali_password_2024}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:-juakali_jwt_secret_2024}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-juakali_encryption_key_2024}
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./:/var/www/html
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./docker/php/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+    networks:
+      - juakali_network
+    depends_on:
+      - database
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Web Server
+  webserver:
+    image: nginx:alpine
+    container_name: juakali_webserver
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d
+      - ./docker/ssl:/etc/nginx/ssl
+      - ./:/var/www/html
+    networks:
+      - juakali_network
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # WebSocket Service (Real-time notifications)
+  websocket:
+    image: node:18-alpine
+    container_name: juakali_websocket
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-juakali_jwt_secret_2024}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./websocket:/app
+      - /app/node_modules
+    networks:
+      - juakali_network
+    depends_on:
+      - redis
+    command: npm start
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Background Job Processor
+  worker:
+    build:
+      context: ./docker/worker
+      dockerfile: Dockerfile
+    container_name: juakali_worker
+    restart: unless-stopped
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - DB_HOST=database
+      - DB_PORT=3306
+      - DB_DATABASE=${MYSQL_DATABASE:-juakali_lend}
+      - DB_USERNAME=${MYSQL_USER:-juakali_user}
+      - DB_PASSWORD=${MYSQL_PASSWORD:-juakali_password_2024}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QUEUE_NAME=juakali_jobs
+      - CONCURRENCY=${WORKER_CONCURRENCY:-4}
+    volumes:
+      - ./worker:/app
+      - ./worker/logs:/app/logs
+    networks:
+      - juakali_network
+    depends_on:
+      - database
+      - redis
+    command: php artisan queue:work --sleep=1 --tries=3 --max-time=300
+
+  # Queue Service (Message Broker)
+  queue:
+    image: rabbitmq:3-management-alpine
+    container_name: juakali_queue
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-juakali}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-juakali_queue_password_2024}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+      - "25672:25672"
+    volumes:
+      - queue_data:/var/lib/rabbitmq
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+    networks:
+      - juakali_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Elasticsearch Service (Search & Analytics)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
+    container_name: juakali_elasticsearch
+    restart: unless-stopped
+    environment:
+      - node.name=juakali-elasticsearch
+      - cluster.name=juakali-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - juakali_network
+    healthcheck:
+      test: ["CMD-S", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Logstash Service (Log Processing)
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.10.0
+    container_name: juakali_logstash
+    restart: unless-stopped
+    volumes:
+      - ./docker/logstash/pipeline:/usr/share/logstash/pipeline
+      - ./docker/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml
+      - ./logs:/var/log/juakali
+    ports:
+      - "5044:5044"
+    networks:
+      - juakali_network
+    depends_on:
+      - elasticsearch
+    environment:
+      LS_JAVA_OPTS: "-Xmx512m"
+
+  # Kibana Service (Analytics Dashboard)
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.10.0
+    container_name: juakali_kibana
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      XPACK_SECURITY_ENABLED=false
+      XPACK_SECURITY_ENROLLMENT_ENABLED=false
+    ports:
+      - "5601:5601"
+    networks:
+      - juakali_network
+    depends_on:
+      - elasticsearch
+
+  # MailHog Service (Email Testing)
+  mailhog:
+    image: mailhog/mailhog
+    container_name: juakali_mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+    networks:
+      - juakali_network
+
+  # MinIO Service (S3 Compatible Storage)
+  minio:
+    image: minio/minio:latest
+    container_name: juakali_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - minio_data:/data
+      - ./docker/minio/config.json:/root/.minio/config.json
+    networks:
+      - juakali_network
+    command: server /data --console-address ":9001"
+
+  # Monitoring Service (Prometheus)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: juakali_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - juakali_network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Monitoring Service (Grafana)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: juakali_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-juakali_grafana_password}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./docker/grafana/data-sources:/etc/grafana/provisioning/datasources
+    networks:
+      - juakali_network
+    depends_on:
+      - prometheus
+
+  # Backup Service
+  backup:
+    image: postgres:15-alpine
+    container_name: juakali_backup
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${PGPASSWORD:-backup_password}
+      BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
+      S3_BUCKET=${S3_BUCKET:-juakali-backups}
+      AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - ./backup:/backup
+      - ./database/schema.sql:/backup/schema.sql
+      - backup_data:/backup/data
+    networks:
+      -juakali_network
+    command: >
+      sh -c "
+        crond -f /etc/cron.d/backup-cron &&
+        while true; do
+          echo 'Backup service running...'
+          sleep 3600
+        done
+      "
+
+  # Load Balancer
+  loadbalancer:
+    image: haproxy:2.8-alpine
+    container_name: juakali_loadbalancer
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg
+      - ./docker/ssl:/etc/ssl
+    networks:
+      - juakali_network
+    depends_on:
+      - webserver
+    command: haproxy -f /usr/local/etc/haproxy/haproxy
+
+# Networks
+networks:
+  juakali_driver:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+  juakali_network:
+    external: true
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.21.0.0/16
+
+# Volumes
+volumes:
+  database_data:
+    driver: local
+  redis_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+  queue_data:
+    driver: local
+  minio_data:
+    driver: local
+  grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  backup_data:
+    driver: local
+
+# Development override
+# Uncomment for development environment
+# x-dev:
+#   environment:
+#     - APP_ENV=development
+#     - APP_DEBUG=true
+#   volumes:
+#     - .:/var/www/html
+#   ports:
+#     - "8081:8081" # Xdebug port
+#   services:
+#     api:
+#       environment:
+#         - APP_ENV=development
+#     webserver:
+#       ports:
+#         - "8080:80" # Alternative port to avoid conflicts

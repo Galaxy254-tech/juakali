@@ -169,6 +169,7 @@ function handlePostRequests($action) {
             } else {
                 apiResponse(false, null, 'Failed to award points', 500);
             }
+            break;
 
         case 'join_challenge':
             $challengeId = intval($data['challenge_id'] ?? 0);

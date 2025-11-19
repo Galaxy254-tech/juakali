@@ -267,6 +267,7 @@ function handlePutRequests($action) {
             } else {
                 apiResponse(false, null, $result['message'] ?? 'Failed to claim reward', 400);
             }
+            break;
 
         default:
             apiResponse(false, null, 'Invalid action', 400);

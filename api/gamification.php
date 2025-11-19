@@ -253,6 +253,7 @@ function handlePutRequests($action) {
 
             $result = $gamification->updateChallengeProgress($userId, $challengeId, $progress);
             apiResponse(true, $result, 'Progress updated');
+            break;
 
         case 'claim_reward':
             $rewardId = intval($data['reward_id'] ?? 0);

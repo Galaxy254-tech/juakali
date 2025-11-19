@@ -1118,6 +1118,380 @@ class GamificationSystem {
 
         return $csv;
     }
+
+    /**
+     * Get user achievements (API endpoint)
+     */
+    public function getUserAchievements($userId) {
+        return $this->db->fetchAll("
+            SELECT
+                a.id, a.name, a.description, a.achievement_type,
+                ua.progress, ua.completed, ua.completed_at,
+                CASE
+                    WHEN ua.completed = 1 THEN 'completed'
+                    WHEN ua.progress > 0 THEN 'in_progress'
+                    ELSE 'not_started'
+                END as status
+            FROM achievements a
+            LEFT JOIN user_achievements ua ON a.id = ua.achievement_id AND ua.user_id = ?
+            WHERE a.is_active = 1
+            ORDER BY a.id
+        ", [$userId]);
+    }
+
+    /**
+     * Get available rewards for user (API endpoint)
+     */
+    public function getAvailableRewards($userId) {
+        // Get user's current points
+        $userProfile = $this->db->fetchOne("
+            SELECT total_points FROM user_profiles WHERE user_id = ?
+        ", [$userId]);
+
+        $userPoints = $userProfile['total_points'] ?? 0;
+
+        // Get available rewards
+        $rewards = $this->db->fetchAll("
+            SELECT
+                r.id, r.name, r.description, r.reward_type,
+                r.points_cost, r.value, r.validity_days, r.terms_conditions,
+                r.image_url, r.stock_quantity, r.max_per_user,
+                CASE
+                    WHEN r.stock_quantity IS NOT NULL AND r.stock_quantity <= 0 THEN 'out_of_stock'
+                    WHEN r.points_cost > ? THEN 'insufficient_points'
+                    WHEN (
+                        SELECT COUNT(*) FROM user_rewards ur
+                        WHERE ur.user_id = ? AND ur.reward_id = r.id
+                        AND ur.status IN ('pending', 'active', 'used')
+                    ) >= r.max_per_user THEN 'limit_reached'
+                    ELSE 'available'
+                END as availability_status
+            FROM rewards r
+            WHERE r.is_active = 1
+            ORDER BY r.points_cost ASC
+        ", [$userPoints, $userId]);
+
+        return $rewards;
+    }
+
+    /**
+     * Get challenge details (API endpoint)
+     */
+    public function getChallengeDetails($challengeId, $userId) {
+        $challenge = $this->db->fetchOne("
+            SELECT c.*,
+                   CASE
+                       WHEN EXISTS (
+                           SELECT 1 FROM challenge_participants cp
+                           WHERE cp.challenge_id = c.id AND cp.user_id = ?
+                       ) THEN 'joined'
+                       ELSE 'available'
+                   END as participation_status,
+                   (
+                       SELECT progress FROM challenge_participants cp
+                       WHERE cp.challenge_id = c.id AND cp.user_id = ?
+                   ) as user_progress
+            FROM challenges c
+            WHERE c.id = ?
+        ", [$userId, $userId, $challengeId]);
+
+        if (!$challenge) {
+            return null;
+        }
+
+        // Add participant count and rankings
+        $participantStats = $this->db->fetchOne("
+            SELECT
+                COUNT(*) as total_participants,
+                COUNT(CASE WHEN cp.completed = 1 THEN 1 END) as completed_count,
+                AVG(cp.progress) as avg_progress
+            FROM challenge_participants cp
+            WHERE cp.challenge_id = ?
+        ", [$challengeId]);
+
+        $challenge['participant_stats'] = $participantStats;
+
+        // Add user's ranking if participated
+        if ($challenge['participation_status'] === 'joined') {
+            $ranking = $this->db->fetchOne("
+                SELECT ROW_NUMBER() OVER (ORDER BY progress DESC, completed_at ASC) as rank
+                FROM challenge_participants
+                WHERE challenge_id = ?
+                ORDER BY progress DESC, completed_at ASC
+            ", [$challengeId]);
+
+            $challenge['user_rank'] = $ranking['rank'] ?? null;
+        }
+
+        return $challenge;
+    }
+
+    /**
+     * Redeem reward (API endpoint)
+     */
+    public function redeemReward($userId, $rewardId) {
+        try {
+            // Get reward details
+            $reward = $this->db->fetchOne("
+                SELECT * FROM rewards WHERE id = ? AND is_active = 1
+            ", [$rewardId]);
+
+            if (!$reward) {
+                return ['success' => false, 'message' => 'Reward not found'];
+            }
+
+            // Check user points
+            $userProfile = $this->db->fetchOne("
+                SELECT total_points FROM user_profiles WHERE user_id = ?
+            ", [$userId]);
+
+            if (!$userProfile || $userProfile['total_points'] < $reward['points_cost']) {
+                return ['success' => false, 'message' => 'Insufficient points'];
+            }
+
+            // Check stock
+            if ($reward['stock_quantity'] !== null && $reward['stock_quantity'] <= 0) {
+                return ['success' => false, 'message' => 'Reward out of stock'];
+            }
+
+            // Check user limit
+            $userRedemptions = $this->db->fetchOne("
+                SELECT COUNT(*) as count FROM user_rewards
+                WHERE user_id = ? AND reward_id = ?
+                AND status IN ('pending', 'active', 'used')
+            ", [$userId, $rewardId]);
+
+            if ($userRedemptions['count'] >= $reward['max_per_user']) {
+                return ['success' => false, 'message' => 'Redemption limit reached'];
+            }
+
+            // Generate redemption code
+            $redemptionCode = 'REWARD-' . strtoupper(uniqid()) . '-' . $userId;
+
+            // Calculate expiry date
+            $expiryDate = null;
+            if ($reward['validity_days']) {
+                $expiryDate = date('Y-m-d H:i:s', strtotime("+{$reward['validity_days']} days"));
+            }
+
+            // Start transaction
+            $this->db->beginTransaction();
+
+            // Deduct points
+            $this->db->execute("
+                UPDATE user_profiles
+                SET total_points = total_points - ?
+                WHERE user_id = ?
+            ", [$reward['points_cost'], $userId]);
+
+            // Create redemption record
+            $this->db->execute("
+                INSERT INTO user_rewards (
+                    user_id, reward_id, points_spent, status,
+                    redemption_date, expiry_date, redemption_code
+                ) VALUES (?, ?, ?, 'pending', NOW(), ?, ?)
+            ", [$userId, $rewardId, $reward['points_cost'], $expiryDate, $redemptionCode]);
+
+            // Update stock if applicable
+            if ($reward['stock_quantity'] !== null) {
+                $this->db->execute("
+                    UPDATE rewards SET stock_quantity = stock_quantity - 1
+                    WHERE id = ?
+                ", [$rewardId]);
+            }
+
+            // Record points transaction
+            $this->db->execute("
+                INSERT INTO user_points (
+                    user_id, action, points_earned, final_points,
+                    metadata, created_at
+                ) VALUES (?, 'reward_redemption', ?, ?, ?, NOW())
+            ", [
+                $userId,
+                -$reward['points_cost'], // Negative points for redemption
+                -$reward['points_cost'],
+                json_encode([
+                    'reward_id' => $rewardId,
+                    'reward_name' => $reward['name'],
+                    'redemption_code' => $redemptionCode
+                ])
+            ]);
+
+            $this->db->commit();
+
+            return [
+                'success' => true,
+                'message' => 'Reward redeemed successfully',
+                'redemption_code' => $redemptionCode,
+                'expiry_date' => $expiryDate,
+                'points_spent' => $reward['points_cost']
+            ];
+
+        } catch (Exception $e) {
+            $this->db->rollback();
+            error_log("Reward redemption error: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Redemption failed. Please try again.'];
+        }
+    }
+
+    /**
+     * Claim reward (API endpoint)
+     */
+    public function claimReward($userId, $rewardId) {
+        try {
+            $userReward = $this->db->fetchOne("
+                SELECT ur.*, r.name as reward_name
+                FROM user_rewards ur
+                JOIN rewards r ON ur.reward_id = r.id
+                WHERE ur.user_id = ? AND ur.reward_id = ?
+                AND ur.status = 'pending'
+            ", [$userId, $rewardId]);
+
+            if (!$userReward) {
+                return ['success' => false, 'message' => 'Reward not found or already claimed'];
+            }
+
+            // Check if expired
+            if ($userReward['expiry_date'] && $userReward['expiry_date'] < date('Y-m-d H:i:s')) {
+                $this->db->execute("
+                    UPDATE user_rewards SET status = 'expired'
+                    WHERE id = ?
+                ", [$userReward['id']]);
+
+                return ['success' => false, 'message' => 'Reward has expired'];
+            }
+
+            // Update status to active
+            $this->db->execute("
+                UPDATE user_rewards SET status = 'active', used_date = NOW()
+                WHERE id = ?
+            ", [$userReward['id']]);
+
+            return [
+                'success' => true,
+                'message' => 'Reward claimed successfully',
+                'reward_name' => $userReward['reward_name'],
+                'redemption_code' => $userReward['redemption_code']
+            ];
+
+        } catch (Exception $e) {
+            error_log("Reward claim error: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Claim failed. Please try again.'];
+        }
+    }
+
+    /**
+     * Trigger achievement manually (API endpoint)
+     */
+    public function triggerAchievement($userId, $achievementType, $metadata = []) {
+        try {
+            // Check if achievement exists
+            $achievement = $this->db->fetchOne("
+                SELECT * FROM achievements
+                WHERE achievement_type = ? AND is_active = 1
+            ", [$achievementType]);
+
+            if (!$achievement) {
+                return ['success' => false, 'message' => 'Achievement type not found'];
+            }
+
+            // Check if user already has this achievement
+            $existing = $this->db->fetchOne("
+                SELECT COUNT(*) as count FROM user_achievements
+                WHERE user_id = ? AND achievement_id = ? AND completed = 1
+            ", [$userId, $achievement['id']]);
+
+            if ($existing['count'] > 0) {
+                return ['success' => false, 'message' => 'Achievement already unlocked'];
+            }
+
+            // Check conditions
+            $conditions = json_decode($achievement['trigger_conditions'], true);
+            if (!$this->checkAchievementConditions($userId, $conditions)) {
+                return ['success' => false, 'message' => 'Conditions not met'];
+            }
+
+            // Award achievement
+            $this->awardAchievement($userId, $achievement);
+
+            return [
+                'success' => true,
+                'message' => 'Achievement unlocked successfully',
+                'achievement' => [
+                    'name' => $achievement['name'],
+                    'description' => $achievement['description'],
+                    'points_reward' => $achievement['points_reward']
+                ]
+            ];
+
+        } catch (Exception $e) {
+            error_log("Achievement trigger error: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Achievement trigger failed'];
+        }
+    }
+
+    /**
+     * Export user data as JSON (API endpoint)
+     */
+    public function exportUserDataJSON($userId) {
+        $profile = $this->getUserGamificationProfile($userId);
+        $history = $this->getUserRewardsHistory($userId, 1000);
+        $achievements = $this->getUserAchievements($userId);
+
+        return [
+            'export_date' => date('Y-m-d H:i:s'),
+            'user_id' => $userId,
+            'profile' => $profile,
+            'achievements' => $achievements,
+            'history' => $history
+        ];
+    }
+
+    /**
+     * Export user data as CSV (API endpoint)
+     */
+    public function exportUserDataCSV($userId) {
+        $history = $this->getUserRewardsHistory($userId, 1000);
+
+        $csv = "Date,Type,Description,Points,Metadata\n";
+
+        foreach ($history as $item) {
+            $date = date('Y-m-d H:i:s', strtotime($item['created_at']));
+            $type = $item['type'];
+            $description = str_replace('"', '""', $item['description']);
+            $points = $item['value'];
+            $metadata = str_replace('"', '""', json_encode($item['metadata']));
+
+            $csv .= "{$date},{$type},\"{$description}\",{$points},\"{$metadata}\"\n";
+        }
+
+        return $csv;
+    }
+
+    /**
+     * Export user data as PDF (API endpoint placeholder)
+     */
+    public function exportUserDataPDF($userId) {
+        // This would require a PDF library like TCPDF or FPDF
+        // For now, return a simple text-based report
+        $profile = $this->getUserGamificationProfile($userId);
+        $history = $this->getUserRewardsHistory($userId, 50);
+
+        $pdfContent = "Gamification Report\n";
+        $pdfContent .= "Generated: " . date('Y-m-d H:i:s') . "\n\n";
+        $pdfContent .= "User Profile:\n";
+        $pdfContent .= "Total Points: {$profile['profile']['total_points']}\n";
+        $pdfContent .= "Current Level: {$profile['profile']['level_name']}\n";
+        $pdfContent .= "Streak Days: {$profile['profile']['streak_days']}\n\n";
+        $pdfContent .= "Recent Activity:\n";
+
+        foreach ($history as $item) {
+            $date = date('Y-m-d', strtotime($item['created_at']));
+            $pdfContent .= "{$date} - {$item['type']}: {$item['description']} ({$item['value']} points)\n";
+        }
+
+        return $pdfContent;
+    }
 }
 
 // Usage examples and integration points

@@ -70,13 +70,13 @@ try {
     $credit_report = $creditEngine->getCreditReport($user_id);
 
     // Additional risk factors
-    $additional_risks = $this->assessAdditionalRiskFactors($db, $user_id, $transaction_data);
+    $additional_risks = assessAdditionalRiskFactors($db, $user_id, $transaction_data);
 
     // Calculate overall risk score
-    $overall_risk_score = $this->calculateOverallRiskScore($credit_report, $additional_risks);
+    $overall_risk_score = calculateOverallRiskScore($credit_report, $additional_risks);
 
     // Generate risk mitigation strategies
-    $mitigation_strategies = $this->generateMitigationStrategies($overall_risk_score, $credit_report, $additional_risks);
+    $mitigation_strategies = generateMitigationStrategies($overall_risk_score, $credit_report, $additional_risks);
 
     // Compile comprehensive risk assessment
     $risk_assessment = [
@@ -88,17 +88,17 @@ try {
             'status' => $user['status']
         ],
         'overall_risk_score' => $overall_risk_score,
-        'risk_level' => $this->determineRiskLevel($overall_risk_score),
+        'risk_level' => determineRiskLevel($overall_risk_score),
         'credit_analysis' => $credit_report,
         'additional_risks' => $additional_risks,
         'mitigation_strategies' => $mitigation_strategies,
         'assessment_date' => date('Y-m-d H:i:s'),
         'next_review_date' => $credit_report['next_review_date'],
-        'recommendations' => $this->generateRiskRecommendations($overall_risk_score, $credit_report)
+        'recommendations' => generateRiskRecommendations($overall_risk_score, $credit_report)
     ];
 
     // Save risk assessment to database
-    $this->saveRiskAssessment($db, $risk_assessment);
+    saveRiskAssessment($db, $risk_assessment);
 
     // Log the assessment
     $db->query("

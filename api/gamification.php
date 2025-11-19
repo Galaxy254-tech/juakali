@@ -389,6 +389,3 @@ if ($action === 'health') {
 }
 
 ?>
-</html>
-</body>
-</html>

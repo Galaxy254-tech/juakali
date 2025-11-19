@@ -17,9 +17,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once '../includes/auth.php';
 require_once '../includes/gamification-system.php';
 require_once '../includes/database.php';
+require_once '../includes/gamification-logger.php';
 
 // Start session for authentication
 session_start();
+
+// Initialize logger
+$logger = new GamificationLogger(false);
 
 // API response helper
 function apiResponse($success, $data = null, $message = '', $statusCode = 200) {

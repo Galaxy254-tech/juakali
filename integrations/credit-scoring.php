@@ -1120,39 +1120,353 @@ class CreditScoringEngine {
         ]));
         $this->db->execute();
     }
-    
+  
     /**
-     * Calculate dynamic credit limit
+     * Enhanced dynamic credit limit calculation
      */
     public function calculateCreditLimit($retailer_id) {
         $base_limit = 10000;
-        
-        // Get credit score
-        $this->db->query("SELECT score FROM credit_scores WHERE retailer_id = ?");
-        $this->db->bind(':retailer_id', $retailer_id);
-        $credit = $this->db->single();
-        
-        $score = $credit['score'] ?? 500;
-        
-        // Calculate limit based on score
-        $limit = $base_limit + (($score - 500) / 350) * 40000;
-        
-        // Get repayment history
+
+        // Get current credit score with full details
+        $credit_score_result = $this->calculateCreditScore($retailer_id);
+        $score = $credit_score_result['score'];
+
+        // Calculate base limit from credit score
+        $score_multiplier = ($score - 300) / 550; // Normalize 300-850 to 0-1
+        $limit = $base_limit + ($score_multiplier * 99000); // Up to 100x base
+
+        // Apply industry-specific multipliers
+        $features = $credit_score_result['features'];
+        $industry = $features['economic']['primary_industry'];
+        $industry_multiplier = $this->getIndustryCreditMultiplier($industry);
+        $limit *= $industry_multiplier;
+
+        // Business stability adjustment
+        $stability_bonus = $this->calculateStabilityBonus($features['stability']);
+        $limit += $stability_bonus;
+
+        // Seasonal adjustment
+        $seasonal_adjustment = $features['economic']['seasonal_adjustment'] ?? 0;
+        $limit *= (1 + $seasonal_adjustment);
+
+        // Repayment capacity analysis
+        $capacity = $this->analyzeRepaymentCapacity($retailer_id);
+        $limit = min($limit, $capacity['max_affordable']);
+
+        // Risk-based adjustment
+        $risk_level = $credit_score_result['risk_level'];
+        $risk_adjustment = $this->getRiskAdjustment($risk_level);
+        $limit *= $risk_adjustment;
+
+        // Apply regulatory limits
+        $regulatory_limit = $this->getRegulatoryLimit($retailer_id);
+        $limit = min($limit, $regulatory_limit);
+
+        // Ensure minimum viable limit
+        $min_limit = $this->getMinimumCreditLimit($retailer_id);
+        $limit = max($min_limit, $limit);
+
+        // Round to nearest 100
+        $limit = round($limit / 100) * 100;
+
+        // Update credit limit in database
+        $this->updateCreditLimit($retailer_id, $limit, $credit_score_result);
+
+        return [
+            'credit_limit' => $limit,
+            'base_limit' => $base_limit,
+            'multipliers_applied' => [
+                'credit_score' => $score_multiplier,
+                'industry' => $industry_multiplier,
+                'seasonal' => (1 + $seasonal_adjustment),
+                'risk' => $risk_adjustment
+            ],
+            'capacity_analysis' => $capacity,
+            'next_review_date' => $this->calculateNextReviewDate($retailer_id)
+        ];
+    }
+
+    /**
+     * Get industry-specific credit multipliers
+     */
+    private function getIndustryCreditMultiplier($industry) {
+        $multipliers = [
+            'food_grocery' => 1.2,      // High frequency, stable demand
+            'electronics' => 0.9,        // Higher risk, lower margins
+            'clothing' => 1.0,           // Seasonal, moderate risk
+            'beauty' => 1.1,             // Good margins, repeat business
+            'general_merchandise' => 1.05 // Mixed risk profile
+        ];
+
+        return $multipliers[$industry] ?? 1.0;
+    }
+
+    /**
+     * Calculate stability bonus
+     */
+    private function calculateStabilityBonus($stability) {
+        $bonus = 0;
+
+        // Business age bonus
+        if ($stability['business_age_days'] > 1095) { // 3+ years
+            $bonus += 20000;
+        } elseif ($stability['business_age_days'] > 730) { // 2+ years
+            $bonus += 15000;
+        } elseif ($stability['business_age_days'] > 365) { // 1+ year
+            $bonus += 10000;
+        }
+
+        // Order frequency bonus
+        if ($stability['order_frequency'] > 20) {
+            $bonus += 15000;
+        } elseif ($stability['order_frequency'] > 10) {
+            $bonus += 10000;
+        } elseif ($stability['order_frequency'] > 5) {
+            $bonus += 5000;
+        }
+
+        // KYC verification bonus
+        if ($stability['kyc_verified']) {
+            $bonus += 25000;
+        }
+
+        // Stable business pattern bonus
+        if ($stability['has_stable_business']) {
+            $bonus += 10000;
+        }
+
+        return $bonus;
+    }
+
+    /**
+     * Analyze repayment capacity
+     */
+    private function analyzeRepaymentCapacity($retailer_id) {
         $this->db->query("
-            SELECT SUM(CASE WHEN status = 'repaid' THEN 1 ELSE 0 END) as repaid_count
+            SELECT
+                AVG(total_amount) as avg_monthly_revenue,
+                AVG(total_amount) * 0.1 as estimated_monthly_repayment_capacity
+            FROM orders
+            WHERE retailer_id = ?
+            AND created_at > DATE_SUB(NOW(), INTERVAL 6 MONTH)
+            AND status != 'cancelled'
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $revenue = $this->db->single();
+
+        $this->db->query("
+            SELECT
+                SUM(amount_due) as current_monthly_obligations,
+                COUNT(*) as active_loans
+            FROM repayment_schedule rs
+            JOIN loans l ON rs.loan_id = l.id
+            WHERE l.retailer_id = ?
+            AND rs.status = 'pending'
+            AND rs.due_date <= DATE_ADD(NOW(), INTERVAL 30 DAY)
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $obligations = $this->db->single();
+
+        $monthly_capacity = $revenue['estimated_monthly_repayment_capacity'] ?? 0;
+        $current_obligations = $obligations['current_monthly_obligations'] ?? 0;
+        $available_capacity = max(0, $monthly_capacity - $current_obligations);
+
+        // Maximum affordable based on 6-month repayment capacity
+        $max_affordable = $available_capacity * 6;
+
+        return [
+            'estimated_monthly_revenue' => $revenue['avg_monthly_revenue'] ?? 0,
+            'monthly_repayment_capacity' => $monthly_capacity,
+            'current_obligations' => $current_obligations,
+            'available_capacity' => $available_capacity,
+            'max_affordable' => $max_affordable,
+            'active_loans' => $obligations['active_loans'] ?? 0
+        ];
+    }
+
+    /**
+     * Get risk-based adjustment factor
+     */
+    private function getRiskAdjustment($risk_level) {
+        $adjustments = [
+            'very_low' => 1.25,    // Reward low risk
+            'low' => 1.15,
+            'medium_low' => 1.05,
+            'medium' => 1.0,       // Neutral
+            'medium_high' => 0.9,
+            'high' => 0.75,
+            'very_high' => 0.6     // Penalize high risk
+        ];
+
+        return $adjustments[$risk_level] ?? 1.0;
+    }
+
+    /**
+     * Get regulatory limits based on business profile
+     */
+    private function getRegulatoryLimit($retailer_id) {
+        $this->db->query("
+            SELECT kyc_verified, business_registration
+            FROM users
+            WHERE id = ?
+        ");
+        $this->db->bind(':id', $retailer_id);
+        $user = $this->db->single();
+
+        // Different limits based on verification level
+        if ($user['kyc_verified'] && $user['business_registration']) {
+            return 1000000; // 1M for fully verified
+        } elseif ($user['kyc_verified']) {
+            return 500000;  // 500K for KYC verified only
+        } else {
+            return 100000;  // 100K for unverified
+        }
+    }
+
+    /**
+     * Get minimum credit limit
+     */
+    private function getMinimumCreditLimit($retailer_id) {
+        $this->db->query("
+            SELECT COUNT(*) as completed_orders
+            FROM orders
+            WHERE retailer_id = ? AND status = 'delivered'
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $orders = $this->db->single();
+
+        if ($orders['completed_orders'] > 10) {
+            return 25000; // Established businesses
+        } elseif ($orders['completed_orders'] > 0) {
+            return 10000; // Proven businesses
+        } else {
+            return 5000;  // New businesses
+        }
+    }
+
+    /**
+     * Update credit limit in database
+     */
+    private function updateCreditLimit($retailer_id, $limit, $credit_score_result) {
+        $this->db->query("
+            INSERT INTO credit_scores (
+                retailer_id, credit_limit, score, updated_at
+            ) VALUES (?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE
+                credit_limit = ?,
+                score = ?,
+                updated_at = NOW()
+        ");
+        $this->db->bind(':retailer_id', $retailer_id);
+        $this->db->bind(':credit_limit', $limit);
+        $this->db->bind(':score', $credit_score_result['score']);
+        $this->db->bind(':credit_limit', $limit);
+        $this->db->bind(':score', $credit_score_result['score']);
+        $this->db->execute();
+
+        // Log credit limit change
+        $this->db->query("
+            INSERT INTO audit_logs (
+                user_id, action, entity_type, entity_id,
+                new_values, created_at
+            ) VALUES (?, ?, ?, ?, ?, NOW())
+        ");
+        $this->db->bind(':user_id', $retailer_id);
+        $this->db->bind(':action', 'credit_limit_updated');
+        $this->db->bind(':entity_type', 'credit_scores');
+        $this->db->bind(':entity_id', $retailer_id);
+        $this->db->bind(':new_values', json_encode([
+            'credit_limit' => $limit,
+            'credit_score' => $credit_score_result['score'],
+            'risk_level' => $credit_score_result['risk_level']
+        ]));
+        $this->db->execute();
+    }
+
+    /**
+     * Calculate next review date
+     */
+    private function calculateNextReviewDate($retailer_id) {
+        $this->db->query("
+            SELECT COUNT(*) as total_loans,
+                   SUM(CASE WHEN status = 'defaulted' THEN 1 ELSE 0 END) as defaults
             FROM loans WHERE retailer_id = ?
         ");
         $this->db->bind(':retailer_id', $retailer_id);
         $history = $this->db->single();
-        
-        // Bonus for consistent repayment
-        $repaid_count = $history['repaid_count'] ?? 0;
-        $limit += min($repaid_count * 2000, 50000);
-        
-        // Cap at maximum
-        $limit = min($limit, 500000);
-        
-        return max(5000, $limit);
+
+        $total_loans = $history['total_loans'] ?? 0;
+        $defaults = $history['defaults'] ?? 0;
+
+        if ($defaults > 0 || $total_loans < 3) {
+            // Review sooner for new or risky customers
+            return date('Y-m-d', strtotime('+30 days'));
+        } elseif ($total_loans < 10) {
+            return date('Y-m-d', strtotime('+60 days'));
+        } else {
+            // Established customers get longer review periods
+            return date('Y-m-d', strtotime('+90 days'));
+        }
+    }
+
+    /**
+     * Get comprehensive credit report
+     */
+    public function getCreditReport($retailer_id) {
+        $credit_score = $this->calculateCreditScore($retailer_id);
+        $credit_limit = $this->calculateCreditLimit($retailer_id);
+        $fraud_analysis = $this->detectFraud($retailer_id);
+
+        return [
+            'retailer_id' => $retailer_id,
+            'credit_score' => $credit_score,
+            'credit_limit' => $credit_limit,
+            'fraud_analysis' => $fraud_analysis,
+            'generated_at' => date('Y-m-d H:i:s'),
+            'next_review_date' => $credit_limit['next_review_date'],
+            'recommendations' => $this->generateRecommendations($credit_score, $fraud_analysis)
+        ];
+    }
+
+    /**
+     * Generate recommendations based on credit analysis
+     */
+    private function generateRecommendations($credit_score, $fraud_analysis) {
+        $recommendations = [];
+
+        if ($credit_score['score'] < 500) {
+            $recommendations[] = [
+                'type' => 'risk_mitigation',
+                'message' => 'Consider requiring additional collateral or guarantor',
+                'priority' => 'high'
+            ];
+        }
+
+        if ($fraud_analysis['is_suspicious']) {
+            $recommendations[] = [
+                'type' => 'fraud_alert',
+                'message' => 'Enhanced monitoring and manual review recommended',
+                'priority' => 'critical'
+            ];
+        }
+
+        if ($credit_score['confidence'] < 0.7) {
+            $recommendations[] = [
+                'type' => 'data_insufficiency',
+                'message' => 'More transaction history needed for accurate scoring',
+                'priority' => 'medium'
+            ];
+        }
+
+        if ($credit_score['score'] > 750) {
+            $recommendations[] = [
+                'type' => 'opportunity',
+                'message' => 'Excellent candidate for credit limit increase',
+                'priority' => 'low'
+            ];
+        }
+
+        return $recommendations;
     }
 }
 ?>

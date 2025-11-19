@@ -331,10 +331,47 @@ WHERE u.id NOT IN (SELECT user_id FROM user_gamification_preferences);
 
 -- Create indexes for performance optimization
 CREATE INDEX IF NOT EXISTS idx_user_points_user_created ON user_points(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_user_points_action ON user_points(action);
+CREATE INDEX IF NOT EXISTS idx_user_points_final_points ON user_points(final_points);
+
 CREATE INDEX IF NOT EXISTS idx_user_badges_user_earned ON user_badges(user_id, earned_at);
+CREATE INDEX IF NOT EXISTS idx_user_badges_badge_code ON user_badges(badge_code);
+
 CREATE INDEX IF NOT EXISTS idx_challenge_participants_user_completed ON challenge_participants(user_id, completed);
+CREATE INDEX IF NOT EXISTS idx_challenge_participants_challenge ON challenge_participants(challenge_id);
+CREATE INDEX IF NOT EXISTS idx_challenge_participants_progress ON challenge_participants(progress);
+
 CREATE INDEX IF NOT EXISTS idx_user_rewards_user_status ON user_rewards(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_user_rewards_reward_id ON user_rewards(reward_id);
+CREATE INDEX IF NOT EXISTS idx_user_rewards_expiry ON user_rewards(expiry_date);
+CREATE INDEX IF NOT EXISTS idx_user_rewards_redemption_code ON user_rewards(redemption_code);
+
 CREATE INDEX IF NOT EXISTS idx_user_activity_user_type_date ON user_activity(user_id, activity_type, activity_date);
+CREATE INDEX IF NOT EXISTS idx_user_activity_date ON user_activity(activity_date);
+
+CREATE INDEX IF NOT EXISTS idx_challenges_status_dates ON challenges(status, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_challenges_type ON challenges(challenge_type);
+
+CREATE INDEX IF NOT EXISTS idx_rewards_active ON rewards(is_active);
+CREATE INDEX IF NOT EXISTS idx_rewards_cost ON rewards(points_cost);
+CREATE INDEX IF NOT EXISTS idx_rewards_type ON rewards(reward_type);
+
+CREATE INDEX IF NOT EXISTS idx_achievements_type ON achievements(achievement_type);
+CREATE INDEX IF NOT EXISTS idx_achievements_active ON achievements(is_active);
+
+CREATE INDEX IF NOT EXISTS idx_user_achievements_user_achievement ON user_achievements(user_id, achievement_id);
+CREATE INDEX IF NOT EXISTS idx_user_achievements_completed ON user_achievements(completed);
+
+CREATE INDEX IF NOT EXISTS idx_realtime_notifications_user_delivered ON realtime_notifications(user_id, delivered);
+CREATE INDEX IF NOT EXISTS idx_realtime_notifications_type ON realtime_notifications(notification_type);
+
+-- Additional performance indexes
+CREATE INDEX IF NOT EXISTS idx_user_profiles_points ON user_profiles(total_points);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_level ON user_profiles(current_level);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_streak ON user_profiles(streak_days);
+
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 
 -- Create views for common queries
 CREATE OR REPLACE VIEW user_gamification_summary AS

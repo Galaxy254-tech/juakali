@@ -126,37 +126,67 @@ class GamificationSystem {
      * Award points to user for specific action
      */
     public function awardPoints($userId, $action, $metadata = []) {
-        if (!isset($this->pointsConfig[$action])) {
-            return false;
-        }
+        return $this->logger->measure("award_points", function() use ($userId, $action, $metadata) {
+            try {
+                if (!isset($this->pointsConfig[$action])) {
+                    $this->logger->log('WARNING', 'Unknown action attempted for points award', [
+                        'action' => $action,
+                        'user_id' => $userId
+                    ], $userId);
+                    return false;
+                }
 
-        $points = $this->pointsConfig[$action];
+                $points = $this->pointsConfig[$action];
 
-        // Check for multipliers based on user level
-        $multiplier = $this->getPointsMultiplier($userId);
-        $finalPoints = round($points * $multiplier);
+                // Check for multipliers based on user level
+                $multiplier = $this->getPointsMultiplier($userId);
+                $finalPoints = round($points * $multiplier);
 
-        // Record points transaction
-        $this->db->execute("
-            INSERT INTO user_points (
-                user_id, action, points_earned, multiplier, final_points,
-                metadata, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-        ", [
-            $userId, $action, $points, $multiplier, $finalPoints,
-            json_encode($metadata)
-        ]);
+                // Record points transaction
+                $this->db->execute("
+                    INSERT INTO user_points (
+                        user_id, action, points_earned, multiplier, final_points,
+                        metadata, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+                ", [
+                    $userId, $action, $points, $multiplier, $finalPoints,
+                    json_encode($metadata)
+                ]);
 
-        // Update user total points
-        $this->updateUserTotalPoints($userId);
+                // Update user total points
+                $this->updateUserTotalPoints($userId);
 
-        // Check for new badges
-        $this->checkAndAwardBadges($userId);
+                // Check for new badges
+                $this->checkAndAwardBadges($userId);
 
-        // Check for level up
-        $this->checkLevelUp($userId);
+                // Check for level up
+                $this->checkLevelUp($userId);
 
-        return $finalPoints;
+                $this->logger->logUserAction($userId, 'points_awarded', [
+                    'action' => $action,
+                    'points_awarded' => $finalPoints,
+                    'base_points' => $points,
+                    'multiplier' => $multiplier,
+                    'metadata' => $metadata
+                ]);
+
+                // Log business metric
+                $this->logger->logBusinessMetric('points_awarded', $finalPoints, [
+                    'action_type' => $action,
+                    'user_id' => $userId
+                ]);
+
+                return $finalPoints;
+
+            } catch (Exception $e) {
+                $this->logger->logError('Failed to award points', $e, [
+                    'user_id' => $userId,
+                    'action' => $action,
+                    'metadata' => $metadata
+                ], $userId);
+                throw $e;
+            }
+        }, ['action' => $action, 'user_id' => $userId], $userId);
     }
 
     /**

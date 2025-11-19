@@ -813,85 +813,232 @@ try {
             }
         }
 
-        // Install PWA prompt
-        let deferredPrompt;
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            deferredPrompt = e.prompt;
-            showInstallPrompt();
-        });
-
-        function showInstallPrompt() {
-            const prompt = document.getElementById('installPrompt');
-            if (prompt && prompt.classList.contains('hidden')) {
-                prompt.classList.remove('hidden');
-            }
-        }
-
-        function dismissInstallPrompt() {
-            const prompt = document.getElementById('installPrompt');
-            if (prompt) {
-                prompt.classList.add('hidden');
-            }
-            localStorage.setItem('pwa-install-dismissed', 'true');
-        }
-
-        function installPWA() {
-            if (deferredPrompt) {
-                deferredPrompt.prompt();
-                deferredPrompt.userChoice.then((choiceResult) => {
-                    if (choiceResult.outcome === 'accepted') {
-                        console.log('User accepted the A2HS prompt');
-                    } else {
-                        console.log('User dismissed the A2HS prompt');
-                    }
-                    deferredPrompt = null;
-                    dismissInstallPrompt();
+        // Simple analytics tracking
+        function trackEvent(eventName, properties = {}) {
+            // Send analytics data to server if online
+            if (navigator.onLine) {
+                fetch('../api/analytics/track.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        event: eventName,
+                        properties: properties,
+                        timestamp: Date.now(),
+                        user_agent: navigator.userAgent,
+                        user_id: <?php echo $user_id ?? 'null'; ?>,
+                        role: '<?php echo $user_role; ?>'
+                    })
+                }).catch(error => {
+                    console.warn('Failed to send analytics:', error);
                 });
             }
+
+            // Store offline for later sync
+            if ('serviceWorker' in navigator && !navigator.onLine) {
+                const offlineEvent = {
+                    event: eventName,
+                    properties: properties,
+                    timestamp: Date.now(),
+                    user_id: <?php echo $user_id ?? 'null'; ?>,
+                    role: '<?php echo $user_role; ?>'
+                };
+                localStorage.setItem(`analytics_${Date.now()}`, JSON.stringify(offlineEvent));
+            }
         }
 
-        // Check if user has previously dismissed the install prompt
-        if (localStorage.getItem('pwa-install-dismissed') === 'true') {
-            dismissInstallPrompt();
-        }
+        // Track page views
+        trackEvent('page_view', {
+            page: 'mobile_dashboard',
+            title: 'Mobile Dashboard',
+            referrer: document.referrer
+        });
 
-        // Payment function
+        // Payment function with analytics
         function makePayment(repaymentId) {
+            trackEvent('payment_initiated', { repayment_id: repaymentId });
+
             // Initiate M-Pesa STK Push
             window.location.href = `../pages/retailer/make-payment.php?id=${repaymentId}`;
         }
 
-        // Check for pending repayments and send reminders
+        // Enhanced notification handling
+        function handleNotificationClick(data) {
+            trackEvent('notification_clicked', data);
+
+            // Handle specific notification types
+            if (data.action === 'view' && data.url) {
+                window.open(data.url, '_blank');
+            }
+        }
+
+        // Check for pending repayments and send intelligent reminders
         <?php if (!empty($dashboard_data['pending_repayments'])): ?>
             <?php foreach ($dashboard_data['pending_repayments'] as $repayment): ?>
                 <?php
                 $due_date = new DateTime($repayment['due_date']);
                 $now = new DateTime();
                 $diff = $now->diff($due_date);
-                if ($diff->days <= 1): // Within 1 day of due date
-                ?>
+                $hours_diff = $diff->h + ($diff->days * 24);
+
+                // Smart reminder logic
+                if ($diff->days <= 1): // Within 1 day
+                    $urgency = $hours_diff <= 2 ? 'high' : 'normal';
+                    $message = "Payment reminder: KES " . number_format($repayment['amount_due'], 2) .
+                             " due " . ($hours_diff <= 2 ? 'soon' : 'on') . " " .
+                             date('M j, Y', strtotime($repayment['due_date']));
+                    ?>
                     setTimeout(() => {
-                        alert('Payment reminder: KES <?php echo number_format($repayment['amount_due'], 2); ?> due on <?php echo date('M j, Y', strtotime($repayment['due_date'])); ?>');
-                    }, 2000);
+                        showNotification('payment_due', {
+                            message: '<?php echo $message; ?>',
+                            urgency: '<?php echo $urgency; ?>',
+                            repayment_id: <?php echo $repayment['id']; ?>
+                        });
+                        trackEvent('payment_reminder', {
+                            urgency: '<?php echo $urgency; ?>',
+                            days_until_due: <?php echo $diff->days; ?>,
+                            hours_until_due: <?php echo $hours_diff; ?>
+                        });
+                    }, <?php echo $urgency === 'high' ? 1000 : 3000; ?>);
                 <?php endif; ?>
             <?php endforeach; ?>
         <?php endif; ?>
 
-        // Auto-refresh every 5 minutes
-        setInterval(() => {
-            location.reload();
-        }, 300000);
+        // Show custom notification (replaces alert)
+        function showNotification(type, options) {
+            const notification = document.createElement('div');
+            notification.className = `custom-notification notification-${type}`;
+            notification.innerHTML = `
+                <div class="notification-content">
+                    <i class="fas fa-${options.urgency === 'high' ? 'exclamation-circle' : 'info-circle'}"></i>
+                    <span>${options.message}</span>
+                    <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+                </div>
+            `;
 
-        // Handle back button
+            document.body.appendChild(notification);
+
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 5000);
+
+            // Add notification styles if not already present
+            if (!document.querySelector('#notification-styles')) {
+                const style = document.createElement('style');
+                style.id = 'notification-styles';
+                style.textContent = `
+                    .custom-notification {
+                        position: fixed;
+                        top: 20px;
+                        right: 20px;
+                        max-width: 300px;
+                        z-index: 9999;
+                        animation: slideIn 0.3s ease-out;
+                    }
+                    .notification-high {
+                        background: #ef4444;
+                        color: white;
+                    }
+                    .notification-normal {
+                        background: #10b981;
+                        color: white;
+                    }
+                    .notification-content {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                        padding: 15px;
+                    }
+                    .notification-close {
+                        background: none;
+                        border: none;
+                        color: white;
+                        font-size: 20px;
+                        cursor: pointer;
+                        margin-left: auto;
+                        padding: 0;
+                        opacity: 0.8;
+                    }
+                    .notification-close:hover {
+                        opacity: 1;
+                    }
+                    @keyframes slideIn {
+                        from {
+                            transform: translateX(100%);
+                            opacity: 0;
+                        }
+                        to {
+                            transform: translateX(0);
+                            opacity: 1;
+                        }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        }
+
+        // Smart refresh only when needed
+        function smartRefresh() {
+            const lastRefresh = localStorage.getItem('lastRefresh');
+            const now = Date.now();
+            const refreshInterval = 5 * 60 * 1000; // 5 minutes
+
+            if (!lastRefresh || now - parseInt(lastRefresh) > refreshInterval) {
+                localStorage.setItem('lastRefresh', now.toString());
+                location.reload();
+            }
+        }
+
+        // Listen for background sync completion
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', event => {
+                if (event.data.type === 'SYNC_COMPLETE') {
+                    trackEvent('sync_completed');
+                    smartRefresh();
+                }
+            });
+        }
+
+        // Periodic smart refresh (every 30 seconds check)
+        setInterval(smartRefresh, 30000);
+
+        // Enhanced back button handling
         window.addEventListener('popstate', (event) => {
             if (event.state === null) {
                 history.pushState({}, document.title, window.location.href);
             }
+            trackEvent('navigation_back');
         });
 
         // Initialize app state
         history.pushState({}, document.title, window.location.href);
+
+        // Track user session
+        trackEvent('session_start', {
+            screen_width: window.screen.width,
+            screen_height: window.screen.height,
+            connection_type: navigator.connection ? navigator.connection.effectiveType : 'unknown'
+        });
+
+        // Track when user leaves page
+        window.addEventListener('beforeunload', () => {
+            trackEvent('session_end', {
+                session_duration: Date.now() - performance.now()
+            });
+        });
+
+        // Track visibility changes
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                trackEvent('page_hidden');
+            } else {
+                trackEvent('page_visible');
+            }
+        });
     </script>
 </body>
 </html>

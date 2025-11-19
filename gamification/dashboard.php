@@ -1,38 +1,53 @@
 <?php
-/**
- * Gamification Dashboard for JuaKali Lend
- * User interface for points, badges, challenges, and rewards
- */
-
 session_start();
-require_once '../includes/auth.php';
-require_once '../includes/gamification-system.php';
+require_once '../includes/config.php';
+require_once '../includes/functions.php';
 require_once '../includes/database.php';
+require_once '../includes/loyalty-gamification.php';
 
-// Check authentication
-if (!isLoggedIn()) {
-    header('Location: ../auth/login.php');
-    exit;
+// Check if user is logged in
+if (!isset($_SESSION['user_id'])) {
+    header('Location: ../login.php');
+    exit();
 }
 
-// Initialize gamification system
+// Initialize database and gamification system
+$db = new Database();
+$gamification = new LoyaltyGamificationSystem($db);
 $userId = $_SESSION['user_id'];
-$gamification = new GamificationSystem($userId);
-$db = Database::getInstance();
 
-// Get user gamification profile
+// Initialize gamification profile if needed
 $profile = $gamification->getUserGamificationProfile($userId);
-$leaderboard = $gamification->getLeaderboard('points', 'monthly', 10);
-$userChallenges = $gamification->getUserChallenges($userId);
-$rewardsHistory = $gamification->getUserRewardsHistory($userId, 20);
+if (!$profile) {
+    $profile = $gamification->initializeUserGamification($userId);
+}
 
-// Get user rank
-$userRank = 1;
-foreach ($leaderboard as $index => $user) {
-    if ($user['id'] == $userId) {
-        $userRank = $index + 1;
-        break;
+// Get user statistics
+$userStats = $gamification->getUserGamificationStats($userId);
+
+// Get available rewards
+$availableRewards = $gamification->getAvailableRewards();
+
+// Get leaderboard
+$leaderboard = $gamification->getLeaderboard('points', 10);
+
+// Get user's rank
+$userRank = $gamification->getUserRank($userId, 'points');
+
+// Handle reward redemption
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['redeem_reward'])) {
+    $rewardId = $_POST['reward_id'];
+    $redemptionResult = $gamification->redeemPoints($userId, $rewardId);
+
+    if ($redemptionResult['success']) {
+        $successMessage = "Successfully redeemed: {$redemptionResult['reward']['name']}!";
+    } else {
+        $errorMessage = $redemptionResult['message'];
     }
+
+    // Refresh profile and stats
+    $profile = $gamification->getUserGamificationProfile($userId);
+    $userStats = $gamification->getUserGamificationStats($userId);
 }
 ?>
 

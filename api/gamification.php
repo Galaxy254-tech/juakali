@@ -27,13 +27,29 @@ $logger = new GamificationLogger(false);
 
 // API response helper
 function apiResponse($success, $data = null, $message = '', $statusCode = 200) {
+    global $logger;
+
     http_response_code($statusCode);
-    echo json_encode([
+
+    $response = [
         'success' => $success,
         'data' => $data,
         'message' => $message,
         'timestamp' => date('Y-m-d H:i:s')
-    ]);
+    ];
+
+    echo json_encode($response);
+
+    // Log API response
+    if ($logger) {
+        $logger->log('INFO', 'API Response sent', [
+            'status_code' => $statusCode,
+            'success' => $success,
+            'message' => $message,
+            'response_size' => strlen(json_encode($response))
+        ]);
+    }
+
     exit;
 }
 

@@ -320,6 +320,60 @@ CREATE TABLE IF NOT EXISTS user_gamification_preferences (
     UNIQUE KEY unique_user_preferences (user_id)
 );
 
+-- User Referrals Table (for gamification)
+CREATE TABLE IF NOT EXISTS user_referrals (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    referrer_id INT NOT NULL,
+    referral_id INT NOT NULL,
+    referral_code VARCHAR(50) NOT NULL,
+    status ENUM('pending', 'completed', 'cancelled') DEFAULT 'pending',
+    completed_at DATETIME,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (referrer_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (referral_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_referral (referrer_id, referral_id),
+    INDEX idx_referrer_id (referrer_id),
+    INDEX idx_referral_code (referral_code),
+    INDEX idx_status (status)
+);
+
+-- Notifications Table (for gamification notifications)
+CREATE TABLE IF NOT EXISTS notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    data JSON,
+    is_read BOOLEAN DEFAULT FALSE,
+    read_at DATETIME,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_type (type),
+    INDEX idx_is_read (is_read),
+    INDEX idx_created_at (created_at)
+);
+
+-- User Activity Archive Table (for old activity logs)
+CREATE TABLE IF NOT EXISTS user_activity_archive (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    activity_type VARCHAR(50) NOT NULL,
+    activity_data JSON,
+    activity_date DATETIME NOT NULL,
+    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_activity_type (activity_type),
+    INDEX idx_activity_date (activity_date),
+    INDEX idx_archived_at (archived_at)
+);
+
 -- Insert default preferences for existing users
 INSERT IGNORE INTO user_gamification_preferences (user_id, notification_preferences, privacy_settings, display_preferences)
 SELECT u.id,
